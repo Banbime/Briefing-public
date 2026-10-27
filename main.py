@@ -296,6 +296,39 @@ def weather():
 
     return "Ambérieu-en-Bugey. " + " ".join(parts) + " Sources : conditions actuelles et prévisions Open-Meteo."
 
+
+def is_open_access(item):
+    """Use OpenAlex metadata to retain only papers marked open access."""
+    cache = getattr(is_open_access, "_cache", {})
+    key = (item.get("doi") or item.get("link") or item.get("title", "")).lower()
+    if key in cache:
+        return cache[key]
+    try:
+        doi = extract_doi(item)
+        if doi:
+            api_url = "https://api.openalex.org/works/https://doi.org/" + requests.utils.quote(doi, safe="/")
+        else:
+            query = requests.utils.quote(item.get("title", ""))
+            api_url = f"https://api.openalex.org/works?search={query}&per-page=1"
+        response = requests.get(api_url, timeout=12, headers=HEADERS)
+        if response.status_code != 200:
+            cache[key] = False
+            is_open_access._cache = cache
+            print(f"Open access check unavailable: {item.get('title','')[:80]}")
+            return False
+        payload = response.json()
+        work = payload.get("results", [{}])[0] if isinstance(payload.get("results"), list) else payload
+        oa = work.get("open_access", {}) if isinstance(work, dict) else {}
+        is_oa = bool(oa.get("is_oa")) or bool(oa.get("oa_url"))
+        cache[key] = is_oa
+        is_open_access._cache = cache
+        print(f"Open access [{is_oa}]: {item.get('title','')[:100]}")
+        return is_oa
+    except Exception as ex:
+        print("Open access check failed:", type(ex).__name__)
+        return False
+
+
 def select_items():
     world_all = collect("world")
     world = []
@@ -306,7 +339,9 @@ def select_items():
     for x in world_all:
         if len(world) >= 3: break
         if x not in world: world.append(x)
-    nature, chemistry, building = collect("nature"), collect("chemistry"), collect("building")
+    nature = [x for x in collect("nature") if is_open_access(x)]
+    chemistry = [x for x in collect("chemistry") if is_open_access(x)]
+    building = [x for x in collect("building") if is_open_access(x)]
     selected_nature = chemistry[:1]
     for x in nature + chemistry[1:]:
         if len(selected_nature) >= 3: break
@@ -321,6 +356,7 @@ def select_items():
     for _, x in ranked:
         if len(selected_building) >= 3: break
         if x not in selected_building: selected_building.append(x)
+    print(f"Open-access selection: Nature/Chemistry={len(selected_nature)}, Building and Environment={len(selected_building)}")
     enrich_abstracts(selected_nature + selected_building)
     return world[:3], selected_nature[:3], selected_building[:3]
 
