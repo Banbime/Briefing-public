@@ -232,12 +232,20 @@ def weather():
                          (", ".join(observations) if observations else
                           "données reçues mais champs météo non identifiés") + ".")
         except Exception as ex:
+            # Ne jamais journaliser l'exception requests telle quelle : elle peut contenir
+            # l'URL complète et donc le token Infoclimat dans les logs publics.
             error_text = str(ex)
-            print("Infoclimat observations error:", error_text)
-            if "Wrong IP Address" in error_text:
-                parts.append("Observations Infoclimat indisponibles : le token est probablement lié à une autre adresse IP. L'API Open Data Infoclimat ne peut pas être utilisée de façon fiable depuis ce runner GitHub sans autorisation IP compatible.")
+            safe_error = re.sub(r"(?i)(token=)[^&\\s]+", r"\\1[MASQUÉ]", error_text)
+            print("Infoclimat observations error:", safe_error)
+            response = locals().get("r")
+            response_body = (response.text or "").strip() if response is not None else ""
+            safe_body = re.sub(r"(?i)(token=)[^&\\s]+", r"\\1[MASQUÉ]", response_body)[:240]
+            if "Wrong IP Address" in error_text or "Wrong IP Address" in response_body:
+                parts.append("Observations Infoclimat indisponibles : refus pour adresse IP non autorisée (Wrong IP Address).")
+            elif response is not None and response.status_code == 400:
+                parts.append("Observations Infoclimat indisponibles : requête refusée (HTTP 400). Vérifier dans Infoclimat que la clé est valide pour l'API Open Data, que la station est autorisée et que le token GitHub a bien été remplacé. Détail technique sans clé : " + (safe_body or "aucun détail renvoyé") + ".")
             else:
-                parts.append("Observations Infoclimat indisponibles : " + error_text + ".")
+                parts.append("Observations Infoclimat indisponibles : erreur de requête. Vérifier la clé API, l'autorisation de la station et l'accès réseau.")
     else:
         parts.append("Observations Infoclimat non configurées : le secret INFOCLIMAT_API_KEY est absent.")
 
