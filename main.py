@@ -76,13 +76,13 @@ def _article_image_url(node, page_url):
     if not node:
         return ""
     candidates = []
-    for attr in ("data-zoom-src", "data-src", "data-original", "src"):
+    for attr in ("data-zoom-src", "data-src", "data-original", "data-original-src",
+                 "data-lazy-src", "data-image", "data-full-src", "src"):
         value = node.get(attr, "")
         if value:
             candidates.append(value.strip())
     srcset = node.get("srcset", "") or node.get("data-srcset", "")
     if srcset:
-        # The last srcset entry is generally the largest available rendition.
         for entry in srcset.split(","):
             value = entry.strip().split(" ")[0]
             if value:
@@ -92,16 +92,14 @@ def _article_image_url(node, page_url):
             value = "https:" + value
         elif value and not value.startswith(("http://", "https://", "data:")):
             value = requests.compat.urljoin(page_url, value)
-        if value.startswith(("http://", "https://")) and not re.search(r"\\.(pdf|svg)(?:[?#]|$)", value, re.I):
+        if value.startswith(("http://", "https://")) and not re.search(r"\.(pdf|svg)(?:[?#]|$)", value, re.I):
             if not re.search(r"(logo|icon|avatar|spinner|placeholder)", value, re.I):
                 return value
     return ""
 
 
 def _building_and_environment_image(soup, page_url):
-    """Prefer the graphical abstract, then a real article figure on ScienceDirect."""
-    # Elsevier page markup changes over time, so check several semantic selectors
-    # and class/id variants without relying on a single CSS class.
+    """Prefer graphical abstracts, then article figures and structured metadata."""
     graphical_selectors = [
         ".graphical-abstract", ".graphicalAbstract", ".graphicalabstract",
         "[class*='graphical-abstract']", "[class*='graphicalAbstract']",
@@ -111,46 +109,60 @@ def _building_and_environment_image(soup, page_url):
     for selector in graphical_selectors:
         try:
             for container in soup.select(selector):
-                for image_node in ([container] if container.name == "img" else container.select("img, source")):
+                nodes = [container] if container.name in ("img", "source") else container.select("img, source")
+                for image_node in nodes:
                     url = _article_image_url(image_node, page_url)
                     if url:
                         return url
-                # Some publisher markup uses a background image instead of <img>.
                 style = container.get("style", "")
                 match = re.search(r"background-image\s*:\s*url\(['\"]?(.*?)['\"]?\)", style, re.I)
                 if match:
                     url = _article_image_url({"src": match.group(1)}, page_url)
                     if url:
                         return url
-        except Exception:
-            continue
 
-    # Fallback: inspect article figures, excluding decorative and supplementary
-    # content. Prefer images with a caption/alt text and the first numbered figure.
+    # Elsevier pages may expose the image only through JSON-LD metadata.
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            payload = json.loads(script.string or script.get_text())
+        except (ValueError, TypeError):
+            continue
+        objects = payload if isinstance(payload, list) else [payload]
+        for obj in objects:
+            if not isinstance(obj, dict):
+                continue
+            for key in ("image", "thumbnailUrl", "thumbnail"):
+                values = obj.get(key, [])
+                values = values if isinstance(values, list) else [values]
+                for value in values:
+                    if isinstance(value, dict):
+                        value = value.get("url") or value.get("contentUrl") or ""
+                    if isinstance(value, str) and value.startswith(("https://", "http://", "//")):
+                        url = _article_image_url({"src": value}, page_url)
+                        if url:
+                            return url
+
     figure_candidates = []
     for figure in soup.select("figure, .figure, [class*='figure']"):
         label = " ".join([
-            figure.get("class", "") if isinstance(figure.get("class"), str) else " ".join(figure.get("class", [])),
+            " ".join(figure.get("class", [])) if isinstance(figure.get("class", []), list) else figure.get("class", ""),
             figure.get("id", ""),
             figure.get("aria-label", ""),
             figure.get_text(" ", strip=True)[:500],
         ]).lower()
         if any(term in label for term in ("graphical abstract", "author photo", "supplementary material", "highlights")):
             continue
-        images = figure.select("img, source")
-        for image_node in images:
+        for image_node in figure.select("img, source"):
             alt = (image_node.get("alt", "") or "").strip().lower()
             if any(term in alt for term in ("logo", "author", "avatar", "icon")):
                 continue
             url = _article_image_url(image_node, page_url)
             if url:
                 caption = figure.select_one("figcaption, .caption, [class*='caption']")
-                score = 0
-                if caption and len(caption.get_text(" ", strip=True)) > 15:
-                    score += 2
-                if re.search(r"(?:gr|fig|figure)[-_ ]?0*1\\b", url, re.I):
+                score = 2 if caption and len(caption.get_text(" ", strip=True)) > 15 else 0
+                if re.search(r"(?:gr|fig|figure)[-_ ]?0*1\b", url, re.I):
                     score += 3
-                if re.search(r"ars\\.els-cdn\\.com|sciencedirect", url, re.I):
+                if re.search(r"ars\.els-cdn\.com|sciencedirect", url, re.I):
                     score += 1
                 figure_candidates.append((score, url))
                 break
@@ -158,7 +170,6 @@ def _building_and_environment_image(soup, page_url):
         figure_candidates.sort(key=lambda candidate: candidate[0], reverse=True)
         return figure_candidates[0][1]
     return ""
-
 
 def fetch_article_image(item):
     """Find publisher illustrations; for Building and Environment prefer its graphical abstract."""
