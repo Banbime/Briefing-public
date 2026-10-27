@@ -154,42 +154,71 @@ def extract_doi(item, page=""):
 
 
 def crossref_abstract(item, page=""):
-    """Try Crossref's public API using a DOI; return empty when no abstract is registered."""
+    """Try Crossref by DOI first, then by title when a DOI is missing."""
     doi = extract_doi(item, page)
-    if not doi:
-        return ""
     try:
-        url = "https://api.crossref.org/works/" + requests.utils.quote(doi, safe="/")
-        r = requests.get(url, timeout=12, headers={**HEADERS, "User-Agent": "BriefingMatinal/1.0"})
+        if doi:
+            url = "https://api.crossref.org/works/" + requests.utils.quote(doi, safe="/")
+            r = requests.get(url, timeout=12, headers={**HEADERS, "User-Agent": "BriefingMatinal/1.0"})
+            if r.status_code == 200:
+                work = r.json().get("message", {})
+                abstract = clean(work.get("abstract", ""))
+                if len(abstract) >= 120:
+                    return abstract[:9000]
+        # Elsevier RSS entries may not expose a DOI, so search Crossref by title.
+        title = clean(item.get("title", ""))
+        if not title:
+            return ""
+        r = requests.get("https://api.crossref.org/works",
+                         params={"query.title": title, "rows": 5},
+                         timeout=12, headers={**HEADERS, "User-Agent": "BriefingMatinal/1.0"})
         if r.status_code != 200:
             return ""
-        work = r.json().get("message", {})
-        abstract = clean(work.get("abstract", ""))
-        return abstract[:9000] if len(abstract) >= 120 else ""
+        works = r.json().get("message", {}).get("items", [])
+        target = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+        for work in works:
+            titles = work.get("title") or []
+            candidate = re.sub(r"[^a-z0-9]+", " ", clean(titles[0] if titles else "").lower()).strip()
+            # Avoid attaching an abstract from an unrelated search result.
+            if candidate and (candidate == target or candidate in target or target in candidate):
+                abstract = clean(work.get("abstract", ""))
+                if len(abstract) >= 120:
+                    return abstract[:9000]
+        return ""
     except Exception as ex:
         print("Crossref abstract lookup failed:", type(ex).__name__)
         return ""
 
 
 def openalex_abstract(item, page=""):
-    """Rebuild an abstract from OpenAlex's public inverted index when available."""
+    """Rebuild OpenAlex abstract by DOI, with a title-search fallback."""
     doi = extract_doi(item, page)
-    if not doi:
-        return ""
     try:
-        api_url = "https://api.openalex.org/works/https://doi.org/" + requests.utils.quote(doi, safe="/")
-        r = requests.get(api_url, timeout=12, headers=HEADERS)
-        if r.status_code != 200:
-            return ""
-        inverted = r.json().get("abstract_inverted_index")
+        if doi:
+            api_url = "https://api.openalex.org/works/https://doi.org/" + requests.utils.quote(doi, safe="/")
+            r = requests.get(api_url, timeout=12, headers=HEADERS)
+            work = r.json() if r.status_code == 200 else {}
+        else:
+            # Search by title when the publisher page/RSS did not reveal a DOI.
+            r = requests.get("https://api.openalex.org/works",
+                             params={"search": item.get("title", ""), "per-page": 5},
+                             timeout=12, headers=HEADERS)
+            works = r.json().get("results", []) if r.status_code == 200 else []
+            target = re.sub(r"[^a-z0-9]+", " ", clean(item.get("title", "")).lower()).strip()
+            work = {}
+            for candidate_work in works:
+                candidate_title = re.sub(r"[^a-z0-9]+", " ", clean(candidate_work.get("title", "")).lower()).strip()
+                if candidate_title and (candidate_title == target or candidate_title in target or target in candidate_title):
+                    work = candidate_work
+                    break
+        inverted = work.get("abstract_inverted_index") if isinstance(work, dict) else None
         if not isinstance(inverted, dict) or not inverted:
             return ""
         positions = {}
         for word, indexes in inverted.items():
             for index in indexes:
                 positions[index] = word
-        abstract = " ".join(positions[i] for i in sorted(positions))
-        abstract = clean(abstract)
+        abstract = clean(" ".join(positions[i] for i in sorted(positions)))
         return abstract[:9000] if len(abstract) >= 120 else ""
     except Exception as ex:
         print("OpenAlex abstract lookup failed:", type(ex).__name__)
@@ -455,7 +484,7 @@ def main():
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Briefing matinal</title>
 <style>body{{font-family:system-ui,sans-serif;max-width:850px;margin:2rem auto;padding:0 1rem;line-height:1.55}}article{{border-bottom:1px solid #ddd;padding:.7rem 0}}audio{{width:100%}}small{{color:#555}}.weather{{padding:1rem;background:#eef5ff;border-radius:12px}}</style></head><body>
 <h1>Briefing matinal — {NOW:%d/%m/%Y}</h1><p>Les résumés scientifiques affichés proviennent des pages des éditeurs lorsqu'ils sont accessibles ; sinon, le résumé RSS est indiqué.</p>
-<div class="weather"><h2>Météo</h2><p>{html.escape(weather_text)}</p><small>Données météo : Infoclimat. Consultez les sources originales pour les détails.</small></div>
+<div class="weather"><h2>Météo</h2><p>{html.escape(weather_text)}</p><small>Données météo : Open-Meteo. Consultez les sources originales pour les détails.</small></div>
 <h2>Écouter le briefing</h2>{"<audio controls src='briefing.mp3'></audio>" if audio_path.exists() else "<p>Audio indisponible pour cette exécution.</p>"}
 <p><a href="briefing.txt">Lire ou télécharger le texte complet</a></p>
 <h2>3 actualités mondiales</h2>{''.join(item_html(x) for x in world)}
