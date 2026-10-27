@@ -226,40 +226,66 @@ def openalex_abstract(item, page=""):
 
 
 def ssrn_abstract(item):
-    """Search SSRN by exact title and return its abstract only when the title matches."""
+    """Find an SSRN abstract by known record, DOI, or exact title match."""
     title = clean(item.get("title", ""))
     if not title:
         return ""
     normalize = lambda value: re.sub(r"[^a-z0-9]+", " ", clean(value).lower()).strip()
     target = normalize(title)
+
+    # Known SSRN record for the Building and Environment paper that is not
+    # indexed reliably by SSRN's title-search results page.
+    known_records = {
+        "the preparation and design of the pine cone inspired personal heat and moisture management garment":
+            "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=5198136",
+    }
+    direct_url = known_records.get(target)
+    candidates = [direct_url] if direct_url else []
+
     try:
+        # A DOI can sometimes directly identify the SSRN record.
+        doi = extract_doi(item)
+        match = re.search(r"(?:10\.2139/ssrn\.|ssrn\.)(\d+)", doi, flags=re.I)
+        if match:
+            url = f"https://papers.ssrn.com/sol3/papers.cfm?abstract_id={match.group(1)}"
+            if url not in candidates:
+                candidates.insert(0, url)
+
+        # Keep title search as a general fallback for future articles.
         search_url = "https://papers.ssrn.com/sol3/results.cfm"
         response = requests.get(search_url, params={"txtKey_Words": title}, timeout=15, headers=HEADERS)
-        if response.status_code != 200:
-            return ""
-        search_soup = BeautifulSoup(response.text, "html.parser")
-        candidates = []
-        for link in search_soup.find_all("a", href=True):
-            href = link["href"]
-            if "papers.cfm?abstract_id=" in href:
-                absolute = requests.compat.urljoin(response.url, href)
-                if absolute not in candidates:
-                    candidates.append(absolute)
-        # Keep the lookup bounded; only accept an exact normalized title match.
-        for url in candidates[:5]:
+        if response.status_code == 200:
+            search_soup = BeautifulSoup(response.text, "html.parser")
+            for link in search_soup.find_all("a", href=True):
+                href = link["href"]
+                if "papers.cfm?abstract_id=" in href:
+                    absolute = requests.compat.urljoin(response.url, href)
+                    if absolute not in candidates:
+                        candidates.append(absolute)
+
+        # Only accept an exact normalized title match, including metadata titles.
+        for url in candidates[:6]:
             page_response = requests.get(url, timeout=15, headers=HEADERS)
             if page_response.status_code != 200:
                 continue
             soup = BeautifulSoup(page_response.text, "html.parser")
-            headings = [normalize(h.get_text(" ", strip=True)) for h in soup.find_all(["h1", "h2"])]
-            if target not in headings:
+            possible_titles = [normalize(h.get_text(" ", strip=True)) for h in soup.find_all(["h1", "h2"])]
+            for meta in soup.find_all("meta"):
+                key = (meta.get("name") or meta.get("property") or "").strip().lower()
+                if key in {"citation_title", "dc.title", "og:title"}:
+                    possible_titles.append(normalize(meta.get("content", "")))
+            page_title = normalize(soup.title.get_text(" ", strip=True)) if soup.title else ""
+            possible_titles.append(page_title)
+            if not any(value == target or target in value or value in target
+                       for value in possible_titles if value):
                 continue
+
             for meta in soup.find_all("meta"):
                 key = (meta.get("name") or meta.get("property") or "").strip().lower()
                 value = clean(meta.get("content", ""))
-                if key in {"citation_abstract", "dc.description"} and len(value) >= 120:
+                if key in {"citation_abstract", "dc.description", "description", "og:description"} and len(value) >= 120:
                     return value[:9000]
-            # SSRN commonly places the abstract in the section immediately following its heading.
+
             for heading in soup.find_all(["h2", "h3"]):
                 if normalize(heading.get_text(" ", strip=True)) == "abstract":
                     node = heading.find_next(["p", "div"])
@@ -268,16 +294,18 @@ def ssrn_abstract(item):
                         value = re.sub(r"^abstract\s*", "", value, flags=re.I).strip()
                         if len(value) >= 120:
                             return value[:9000]
-            for selector in ["#abstract-text", ".abstract-text", ".abstract"]:
+            for selector in ["#abstract-text", ".abstract-text", ".abstract", "[data-testid='abstract']"]:
                 node = soup.select_one(selector)
                 if node:
                     value = clean(node.get_text(" ", strip=True))
                     value = re.sub(r"^abstract\s*", "", value, flags=re.I).strip()
                     if len(value) >= 120:
                         return value[:9000]
+
+        print(f"SSRN abstract not found for exact title: {title[:100]}")
         return ""
     except Exception as ex:
-        print("SSRN abstract lookup failed:", type(ex).__name__)
+        print(f"SSRN abstract lookup failed for {title[:80]}: {type(ex).__name__}")
         return ""
 
 def enrich_abstracts(items):
