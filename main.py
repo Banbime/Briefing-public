@@ -186,8 +186,15 @@ def weather():
             r = requests.get("https://www.infoclimat.fr/opendata/", params=params,
                              timeout=20, headers=HEADERS)
             r.raise_for_status()
+            # Infoclimat peut renvoyer HTTP 200 avec un message texte, notamment
+            # "Wrong IP Address" lorsque le token n'est pas autorisé depuis l'IP du runner.
             if "json" not in r.headers.get("content-type", "").lower():
-                raise ValueError("Infoclimat n'a pas renvoyé du JSON (vérifier la clé et l'IP autorisée).")
+                body = (r.text or "").strip()
+                if "wrong ip address" in body.lower():
+                    raise ValueError("Infoclimat refuse la requête : Wrong IP Address. Le token est associé à une autre IP que celle du runner GitHub Actions.")
+                if "token" in body.lower() or "auth" in body.lower():
+                    raise ValueError("Infoclimat a renvoyé une erreur d'authentification : vérifier le token et les autorisations.")
+                raise ValueError("Infoclimat n'a pas renvoyé du JSON. Réponse reçue : " + body[:160].replace("\\n", " "))
             data = r.json()
             if isinstance(data, dict) and not data:
                 raise ValueError("aucune observation retournée")
@@ -225,8 +232,12 @@ def weather():
                          (", ".join(observations) if observations else
                           "données reçues mais champs météo non identifiés") + ".")
         except Exception as ex:
-            print("Infoclimat observations error:", ex)
-            parts.append("Observations Infoclimat indisponibles (vérifier la clé API et son autorisation IP).")
+            error_text = str(ex)
+            print("Infoclimat observations error:", error_text)
+            if "Wrong IP Address" in error_text:
+                parts.append("Observations Infoclimat indisponibles : le token est probablement lié à une autre adresse IP. L'API Open Data Infoclimat ne peut pas être utilisée de façon fiable depuis ce runner GitHub sans autorisation IP compatible.")
+            else:
+                parts.append("Observations Infoclimat indisponibles : " + error_text + ".")
     else:
         parts.append("Observations Infoclimat non configurées : le secret INFOCLIMAT_API_KEY est absent.")
 
