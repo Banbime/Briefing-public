@@ -49,15 +49,58 @@ def fetch_feed(name, url, category):
                 match = re.search(r"10\.\d{4,9}/[^\s<>]+", identifier, flags=re.I)
                 if match:
                     doi = match.group(0).rstrip(".,;)")
+            image_url = ""
+            for media in (e.get("media_content", []) or []) + (e.get("media_thumbnail", []) or []):
+                if isinstance(media, dict) and media.get("url"):
+                    image_url = media["url"]
+                    break
+            if not image_url:
+                for enclosure in e.get("enclosures", []) or []:
+                    href = enclosure.get("href", "") if isinstance(enclosure, dict) else ""
+                    kind = enclosure.get("type", "").lower() if isinstance(enclosure, dict) else ""
+                    if href and ("image" in kind or re.search(r"\.(jpg|jpeg|png|webp)(?:[?#]|$)", href, re.I)):
+                        image_url = href
+                        break
             if title and link:
                 items.append({"source": name, "title": title, "link": link,
                               "summary": summary[:4000], "abstract": "", "abstract_status": "not_checked",
                               "doi": doi, "date": clean(e.get("published", e.get("updated", ""))),
-                              "category": category})
+                              "category": category, "image_url": image_url})
         return items
     except Exception as ex:
         print(f"Feed error {name}: {type(ex).__name__}")
         return []
+
+def fetch_article_image(item):
+    """Find a publisher-provided article illustration; do not fabricate or download it."""
+    if item.get("image_url"):
+        return item["image_url"]
+    try:
+        response = requests.get(item.get("link", ""), timeout=15, headers=HEADERS)
+        if response.status_code != 200 or "text/html" not in response.headers.get("content-type", ""):
+            return ""
+        soup = BeautifulSoup(response.text, "html.parser")
+        for meta in soup.find_all("meta"):
+            key = (meta.get("property") or meta.get("name") or "").strip().lower()
+            value = (meta.get("content") or "").strip()
+            if key in {"og:image", "og:image:url", "twitter:image", "twitter:image:src",
+                       "citation_thumbnail", "thumbnail"} and value.startswith(("https://", "http://")):
+                if not re.search(r"\.(pdf|svg)(?:[?#]|$)", value, re.I):
+                    item["image_url"] = value
+                    return value
+    except Exception as ex:
+        print(f"Article image lookup failed [{item.get('title','')[:70]}]: {type(ex).__name__}")
+    return ""
+
+
+def enrich_images(items):
+    for item in items:
+        fetch_article_image(item)
+        print(("Article image found: " if item.get("image_url") else "No publisher image found: ")
+              + item.get("title", "")[:80])
+        time.sleep(0.2)
+    return items
+
 
 def unique(items):
     seen, out = set(), []
@@ -567,15 +610,25 @@ def item_html(x):
               "crossref":"Résumé récupéré via Crossref",
               "openalex":"Résumé récupéré via OpenAlex",
               "ssrn":"Résumé récupéré via SSRN"}
-    return f"""<article><h3>{html.escape(x['title'])}</h3>
-<p><small>{html.escape(x['source'])} · {html.escape(x.get('date',''))}</small></p>
-<p><strong>{html.escape(labels.get(status, 'Résumé disponible'))}</strong></p>
-<p>{html.escape(abstract)}</p>
-<p><a href="{html.escape(x['link'], quote=True)}" target="_blank" rel="noopener">Lire la publication originale</a></p></article>"""
+    image = x.get("image_url", "")
+    image_block = (f'<a class="article-image-link" href="{html.escape(x["link"], quote=True)}" target="_blank" rel="noopener">'
+                   f'<img class="article-image" src="{html.escape(image, quote=True)}" alt="" loading="lazy" referrerpolicy="no-referrer">'
+                   f'</a>') if image else '<div class="article-image-placeholder" aria-label="Illustration indisponible"><span>APERÇU</span></div>'
+    return f"""<article class="article-card">
+{image_block}
+<div class="article-content"><p class="eyebrow">{html.escape(x['source'])} · {html.escape(x.get('date',''))}</p>
+<h3>{html.escape(x['title'])}</h3>
+<p class="abstract-status">{html.escape(labels.get(status, 'Résumé disponible'))}</p>
+<p class="abstract-text">{html.escape(abstract)}</p>
+<p><a class="source-link" href="{html.escape(x['link'], quote=True)}" target="_blank" rel="noopener">Lire la publication originale ↗</a></p>
+</div></article>"""
+
 
 def main():
     weather_text = weather()
     world, nature, building = select_items()
+    # Publisher-provided preview images improve the page; audio generation is unchanged.
+    enrich_images(world + nature + building)
     sections = {"Actualités mondiales": world, "Nature (dont Nature Chemistry)": nature,
                 "Building and Environment": building}
     script = gemini_rewrite(sections, weather_text) or fallback_script(weather_text, world, nature, building)
@@ -584,16 +637,30 @@ def main():
     try: asyncio.run(make_audio(script, audio_path))
     except Exception as ex: print("Audio generation failed:", ex)
     page = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Briefing matinal</title>
-<style>body{{font-family:system-ui,sans-serif;max-width:850px;margin:2rem auto;padding:0 1rem;line-height:1.55}}article{{border-bottom:1px solid #ddd;padding:.7rem 0}}audio{{width:100%}}small{{color:#555}}.weather{{padding:1rem;background:#eef5ff;border-radius:12px}}</style></head><body>
-<h1>Briefing matinal — {NOW:%d/%m/%Y}</h1><p>Les résumés scientifiques affichés proviennent des pages des éditeurs lorsqu'ils sont accessibles ; sinon, le résumé RSS est indiqué.</p>
-<div class="weather"><h2>Météo</h2><p>{html.escape(weather_text)}</p><small>Données météo : Open-Meteo. Consultez les sources originales pour les détails.</small></div>
-<h2>Écouter le briefing</h2>{"<audio controls src='briefing.mp3'></audio>" if audio_path.exists() else "<p>Audio indisponible pour cette exécution.</p>"}
-<p><a href="briefing.txt">Lire ou télécharger le texte complet</a></p>
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#102e32"><title>Briefing matinal</title>
+<style>
+:root{{--ink:#17232d;--muted:#637381;--line:#e1e8ec;--accent:#146b65;--paper:#f4f7f6}}
+*{{box-sizing:border-box}}body{{font-family:Inter,ui-sans-serif,system-ui,sans-serif;max-width:1120px;margin:0 auto;padding:0 1.25rem 3rem;line-height:1.65;color:var(--ink);background:var(--paper)}}
+header.hero{{margin:0 -1.25rem 2rem;padding:2.5rem max(1.25rem,calc((100% - 1060px)/2));background:#102e32;color:#fff;border-bottom:5px solid #72c3a9}}
+.kicker,.eyebrow{{text-transform:uppercase;letter-spacing:.09em;font-size:.72rem;font-weight:750;color:var(--muted);margin:0 0 .4rem}}
+.hero .kicker{{color:#9fe2cc}}.hero h1{{font-size:clamp(2rem,5vw,3.4rem);line-height:1.05;max-width:760px;margin:.4rem 0 1rem;letter-spacing:-.04em}}.hero p{{max-width:700px;color:#d5e7e2;margin:0}}
+h2{{font-size:1.55rem;letter-spacing:-.025em;margin:2.5rem 0 1rem;padding-bottom:.55rem;border-bottom:1px solid var(--line)}}h2:before{{content:"";display:inline-block;width:5px;height:1.2em;background:#72c3a9;vertical-align:-.2em;margin-right:.65rem;border-radius:4px}}
+h3{{font-size:1.12rem;line-height:1.35;margin:.35rem 0 .6rem}}a{{color:var(--accent);font-weight:700;text-decoration:none}}a:hover{{text-decoration:underline}}
+article.article-card{{display:grid;grid-template-columns:minmax(180px,30%) 1fr;gap:1.3rem;background:#fff;border:1px solid var(--line);border-radius:16px;overflow:hidden;margin:1rem 0;box-shadow:0 5px 20px #1c35300a}}
+.article-image-link{{display:block;min-height:210px;background:#e8efed}}.article-image{{display:block;width:100%;height:100%;min-height:210px;max-height:300px;object-fit:cover}}
+.article-image-placeholder{{min-height:210px;display:grid;place-items:center;background:linear-gradient(135deg,#d8e9e3,#e8e8dd 55%,#cbdedc);color:#42635d;font-weight:800;letter-spacing:.2em;font-size:.75rem}}
+.article-content{{padding:1rem 1.25rem 1.1rem 0}}.eyebrow{{font-size:.68rem}}.abstract-status{{display:inline-block;background:#e8f4ef;color:#236457;border-radius:99px;padding:.15rem .6rem;font-size:.74rem;font-weight:700;margin:.2rem 0 .4rem}}.abstract-text{{color:#3b4a53;margin:.4rem 0 .7rem}}.source-link{{font-size:.88rem}}
+.weather{{padding:1.25rem 1.4rem;background:#e7f1f0;border:1px solid #d3e5e1;border-radius:16px}}.weather h2{{margin:.1rem 0 .6rem;border:0}}.weather h2:before{{display:none}}.player{{padding:1.1rem 1.3rem;background:#fff;border:1px solid var(--line);border-radius:16px}}audio{{width:100%;margin:.4rem 0}}.intro{{color:var(--muted);max-width:800px}}footer{{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.85rem}}
+@media(max-width:640px){{body{{padding:0 .85rem 2rem}}.hero{{margin-left:-.85rem!important;margin-right:-.85rem!important;padding:2rem .85rem!important}}article.article-card{{grid-template-columns:1fr;gap:0}}.article-image-link,.article-image,.article-image-placeholder{{height:190px;min-height:190px;max-height:230px}}.article-content{{padding:1rem 1.1rem 1.2rem}}h2{{font-size:1.35rem}}}}
+</style></head><body>
+<header class="hero"><p class="kicker">Briefing quotidien · {NOW:%A %d %B %Y}</p><h1>L’essentiel du monde et de la recherche.</h1><p>Un regard sur l’actualité, les découvertes scientifiques et le confort des bâtiments, en quelques minutes.</p></header>
+<p class="intro">Les visuels proviennent des flux RSS ou des métadonnées des éditeurs lorsqu’ils sont disponibles. Ils servent d’aperçus et renvoient vers les publications originales.</p>
+<div class="weather"><h2>Météo à Ambérieu-en-Bugey</h2><p>{html.escape(weather_text)}</p><small>Données météo : Open-Meteo.</small></div>
+<h2>Écouter le briefing</h2><div class="player">{"<audio controls src='briefing.mp3'></audio>" if audio_path.exists() else "<p>Audio indisponible pour cette exécution.</p>"}<p><a href="briefing.txt">Lire ou télécharger le texte complet ↗</a></p></div>
 <h2>3 actualités mondiales</h2>{''.join(item_html(x) for x in world)}
 <h2>3 articles de Nature (dont Nature Chemistry)</h2>{''.join(item_html(x) for x in nature)}
 <h2>3 articles de Building and Environment</h2>{''.join(item_html(x) for x in building)}
-<footer><p>Prototype personnel. Certains éditeurs peuvent bloquer l'accès automatisé ou ne pas exposer l'abstract publiquement.</p></footer></body></html>"""
+<footer><p>Prototype personnel. Les images restent hébergées par leurs éditeurs et peuvent ne pas être disponibles si l’accès automatisé est bloqué. Certains éditeurs ne rendent pas l’abstract complet accessible.</p></footer></body></html>"""
     (SITE / "index.html").write_text(page, encoding="utf-8")
     print("Briefing created:", NOW.isoformat())
 
