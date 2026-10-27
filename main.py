@@ -171,114 +171,96 @@ def enrich_abstracts(items):
     return items
 
 def weather():
-    """Observations de la station Infoclimat 000FI, puis prévisions Open-Meteo."""
+    """Observations actuelles via Open-Meteo (B), prévisions via l'URL Infoclimat configurée (A)."""
     parts = []
     today = NOW.date().isoformat()
-    token = os.getenv("INFOCLIMAT_API_KEY", "").strip()
 
-    # 1) Observations Infoclimat. La clé est fournie uniquement par un secret GitHub.
-    if token:
-        try:
-            params = {
-                "version": "2", "method": "get", "format": "json",
-                "stations[]": "000FI", "start": today, "end": today, "token": token
-            }
-            r = requests.get("https://www.infoclimat.fr/opendata/", params=params,
-                             timeout=20, headers=HEADERS)
-            r.raise_for_status()
-            # Infoclimat peut renvoyer HTTP 200 avec un message texte, notamment
-            # "Wrong IP Address" lorsque le token n'est pas autorisé depuis l'IP du runner.
-            if "json" not in r.headers.get("content-type", "").lower():
-                body = (r.text or "").strip()
-                if "wrong ip address" in body.lower():
-                    raise ValueError("Infoclimat refuse la requête : Wrong IP Address. Le token est associé à une autre IP que celle du runner GitHub Actions.")
-                if "token" in body.lower() or "auth" in body.lower():
-                    raise ValueError("Infoclimat a renvoyé une erreur d'authentification : vérifier le token et les autorisations.")
-                raise ValueError("Infoclimat n'a pas renvoyé du JSON. Réponse reçue : " + body[:160].replace("\\n", " "))
-            data = r.json()
-            if isinstance(data, dict) and not data:
-                raise ValueError("aucune observation retournée")
-            flat = {}
-            def flatten(obj, prefix=""):
-                if isinstance(obj, dict):
-                    for k, v in obj.items():
-                        label = f"{prefix} {k}".strip()
-                        if isinstance(v, (str, int, float)) and not isinstance(v, bool):
-                            flat[label] = v
-                        elif isinstance(v, (dict, list)):
-                            flatten(v, label)
-                elif isinstance(obj, list):
-                    for v in obj:
-                        flatten(v, prefix)
-            flatten(data)
-            def pick(terms):
-                for k, v in flat.items():
-                    if any(t in k.lower() for t in terms) and isinstance(v, (int, float, str)):
-                        if str(v).strip() not in ("", "None", "null"):
-                            return f"{v}"
-                return None
-            observations = []
-            for label, terms, unit in [
-                ("température", ["temperature", "temp"], "°C"),
-                ("humidité", ["humidite", "humidité", "humidity"], "%"),
-                ("vent", ["vent_moyen", "vent moyen", "wind"], "km/h"),
-                ("pression", ["pression", "pressure"], "hPa"),
-                ("pluie", ["pluie", "rain"], "mm"),
-            ]:
-                value = pick(terms)
-                if value is not None:
-                    observations.append(f"{label} {value}{unit}")
-            parts.append("Observations Infoclimat station 000FI : " +
-                         (", ".join(observations) if observations else
-                          "données reçues mais champs météo non identifiés") + ".")
-        except Exception as ex:
-            # Ne jamais journaliser l'exception requests telle quelle : elle peut contenir
-            # l'URL complète et donc le token Infoclimat dans les logs publics.
-            error_text = str(ex)
-            safe_error = re.sub(r"(?i)(token=)[^&\\s]+", r"\\1[MASQUÉ]", error_text)
-            print("Infoclimat observations error:", safe_error)
-            response = locals().get("r")
-            response_body = (response.text or "").strip() if response is not None else ""
-            safe_body = re.sub(r"(?i)(token=)[^&\\s]+", r"\\1[MASQUÉ]", response_body)[:240]
-            if "Wrong IP Address" in error_text or "Wrong IP Address" in response_body:
-                parts.append("Observations Infoclimat indisponibles : refus pour adresse IP non autorisée (Wrong IP Address).")
-            elif response is not None and response.status_code == 400:
-                parts.append("Observations Infoclimat indisponibles : requête refusée (HTTP 400). Vérifier dans Infoclimat que la clé est valide pour l'API Open Data, que la station est autorisée et que le token GitHub a bien été remplacé. Détail technique sans clé : " + (safe_body or "aucun détail renvoyé") + ".")
-            else:
-                parts.append("Observations Infoclimat indisponibles : erreur de requête. Vérifier la clé API, l'autorisation de la station et l'accès réseau.")
-    else:
-        parts.append("Observations Infoclimat non configurées : le secret INFOCLIMAT_API_KEY est absent.")
-
-    # 2) Prévisions du jour : API gratuite sans clé, pour Ambérieu-en-Bugey.
+    # B — Conditions observées : Open-Meteo, sans clé API ni restriction IP.
     try:
         params = {
             "latitude": 45.958, "longitude": 5.343,
             "timezone": "Europe/Paris",
             "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,wind_speed_10m",
-            "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset",
             "forecast_days": 1
         }
         r = requests.get("https://api.open-meteo.com/v1/forecast", params=params,
                          timeout=20, headers=HEADERS)
         r.raise_for_status()
-        data = r.json()
-        current, daily = data.get("current", {}), data.get("daily", {})
-        if current and daily:
-            parts.append(
-                "Prévisions du jour : minimum " + str(daily.get("temperature_2m_min", ["?"])[0]) +
-                "°C, maximum " + str(daily.get("temperature_2m_max", ["?"])[0]) +
-                "°C ; probabilité maximale de précipitations " +
-                str(daily.get("precipitation_probability_max", ["?"])[0]) +
-                "% ; vent actuel " + str(current.get("wind_speed_10m", "?")) +
-                " km/h. Lever du soleil " + str(daily.get("sunrise", [""])[0])[-5:] +
-                ", coucher " + str(daily.get("sunset", [""])[0])[-5:] + "."
-            )
-        else:
-            parts.append("Prévisions du jour indisponibles.")
+        current = r.json().get("current", {})
+        if not current:
+            raise ValueError("aucune observation courante renvoyée")
+        parts.append(
+            "Conditions actuelles (Open-Meteo) : température " +
+            str(current.get("temperature_2m", "?")) + "°C, ressenti " +
+            str(current.get("apparent_temperature", "?")) + "°C, humidité " +
+            str(current.get("relative_humidity_2m", "?")) + "%, vent " +
+            str(current.get("wind_speed_10m", "?")) + " km/h."
+        )
     except Exception as ex:
-        print("Open-Meteo forecast error:", ex)
-        parts.append("Prévisions du jour indisponibles ce matin.")
-    return "Ambérieu-en-Bugey. " + " ".join(parts) + " Sources : observations Infoclimat, prévisions Open-Meteo."
+        print("Open-Meteo current conditions error:", type(ex).__name__, str(ex)[:180])
+        parts.append("Conditions actuelles indisponibles.")
+
+    # A — Prévisions : conserver l'URL Infoclimat configurée dans les variables GitHub.
+    forecast_url = os.getenv("INFOCLIMAT_FORECAST_URL", "").strip()
+    if forecast_url:
+        try:
+            r = requests.get(forecast_url, timeout=20, headers=HEADERS)
+            r.raise_for_status()
+            data = r.json()
+
+            # Les réponses d'API météo varient selon le produit Infoclimat.
+            # On recherche les valeurs connues sans supposer un seul schéma JSON.
+            flat = {}
+            def flatten(obj, prefix=""):
+                if isinstance(obj, dict):
+                    for key, value in obj.items():
+                        label = f"{prefix} {key}".strip().lower()
+                        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                            flat[label] = value
+                        elif isinstance(value, (dict, list)):
+                            flatten(value, label)
+                elif isinstance(obj, list):
+                    for value in obj:
+                        flatten(value, prefix)
+            flatten(data)
+
+            def find_value(names):
+                for key, value in flat.items():
+                    if any(name in key for name in names) and str(value).strip() not in ("", "None", "null"):
+                        return value
+                return None
+
+            tmin = find_value(["temperature_2m_min", "temp_min", "tmin", "minimum"])
+            tmax = find_value(["temperature_2m_max", "temp_max", "tmax", "maximum"])
+            rain = find_value(["precipitation_probability_max", "probability_of_precipitation",
+                               "probabilite_precipitation", "probabilité_précipitation",
+                               "probabilite_de_pluie", "pluie_probabilite"])
+            wind = find_value(["wind_speed_10m", "vent_moyen", "vitesse_vent", "wind_speed"])
+            sunrise = find_value(["sunrise", "lever_soleil", "lever du soleil"])
+            sunset = find_value(["sunset", "coucher_soleil", "coucher du soleil"])
+
+            # If the API provides a structured forecast but uses different field names,
+            # keep a clear diagnostic rather than silently claiming Open-Meteo is the source.
+            if tmin is not None or tmax is not None:
+                forecast = "Prévisions Infoclimat"
+                if tmin is not None: forecast += " : minimum " + str(tmin) + "°C"
+                if tmax is not None: forecast += (", maximum " if tmin is not None else " : maximum ") + str(tmax) + "°C"
+                if rain is not None: forecast += " ; probabilité de précipitations " + str(rain) + "%"
+                if wind is not None: forecast += " ; vent " + str(wind) + " km/h"
+                if sunrise is not None: forecast += " ; lever du soleil " + str(sunrise)[-5:]
+                if sunset is not None: forecast += " ; coucher du soleil " + str(sunset)[-5:]
+                parts.append(forecast + ".")
+            else:
+                print("Infoclimat forecast JSON received; field names not recognized:", ", ".join(list(flat.keys())[:25]))
+                parts.append("Prévisions Infoclimat : réponse reçue, mais format des données non reconnu.")
+        except Exception as ex:
+            # Do not print the URL: it may contain a token or authentication parameter.
+            print("Infoclimat forecast error:", type(ex).__name__, str(ex).split(" for url:")[0][:180])
+            parts.append("Prévisions Infoclimat indisponibles ce matin.")
+    else:
+        parts.append("Prévisions Infoclimat non configurées : vérifier la variable INFOCLIMAT_FORECAST_URL.")
+
+    return "Ambérieu-en-Bugey. " + " ".join(parts) + " Sources : conditions actuelles Open-Meteo, prévisions Infoclimat."
 def select_items():
     world_all = collect("world")
     world = []
