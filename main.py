@@ -807,7 +807,21 @@ def select_items():
     # Scientific papers may be up to one year old; prefer a rotating selection over newest-only.
     nature = scientific_papers_from_last_year([x for x in collect("nature") if is_open_access(x)])
     chemistry = scientific_papers_from_last_year([x for x in collect("chemistry") if is_open_access(x)])
-    building = scientific_papers_from_last_year([x for x in collect("building") if is_open_access(x)])
+    building_all = collect("building")
+    building_recent = scientific_papers_from_last_year(building_all)
+    building_oa = [x for x in building_recent if is_open_access(x)]
+    # Do not let incomplete OpenAlex metadata or a temporary API failure hide
+    # all Building and Environment papers. Prefer OA, then use recent publisher
+    # records as a fallback so the section remains populated and links still work.
+    if len(building_oa) >= 3:
+        building = building_oa
+        print(f"Building and Environment selection: {len(building_oa)} recent OA papers")
+    else:
+        building = building_recent
+        print(f"Building and Environment OA fallback: {len(building_oa)} OA / {len(building_recent)} recent papers")
+        if len(building) < 3:
+            building = building_all
+            print(f"Building and Environment date fallback: using {len(building)} RSS records")
     selected_chemistry = rotating_selection(chemistry, 1, seed_offset=3)
     selected_nature = list(selected_chemistry)
     remaining_nature = [x for x in nature + chemistry if x["title"].lower() not in {y["title"].lower() for y in selected_nature}]
