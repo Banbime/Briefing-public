@@ -1051,16 +1051,21 @@ def main():
     except Exception as ex:
         print("French audio translation failed; refusing to publish untranslated audio:", type(ex).__name__, str(ex))
 
+    # Alternating original positive thoughts and quotations attributed to scientists.
+    # Translated quotations are rendered in French; attribution is kept visible.
     daily_thoughts = [
-        "Chaque petit progrès prépare les grandes avancées.",
-        "La curiosité transforme une journée ordinaire en occasion d’apprendre.",
-        "Avance à ton rythme : la constance compte plus que la perfection.",
-        "Aujourd’hui est une nouvelle occasion de découvrir, créer et progresser.",
-        "Une idée, un geste ou une rencontre peut changer le cours d’une journée.",
-        "Prends le temps de voir ce qui va bien, puis construis la suite.",
-        "Les grandes découvertes commencent souvent par une simple question.",
+        ("Chaque petit progrès prépare les grandes avancées.", "Pensée positive"),
+        ("La curiosité transforme une journée ordinaire en occasion d’apprendre.", "Pensée positive"),
+        ("Avance à ton rythme : la constance compte plus que la perfection.", "Pensée positive"),
+        ("Rien dans la vie n’est à craindre, tout est à comprendre.", "Marie Curie — double prix Nobel"),
+        ("Aujourd’hui est une nouvelle occasion de découvrir, créer et progresser.", "Pensée positive"),
+        ("Le hasard ne favorise que les esprits préparés.", "Louis Pasteur — scientifique"),
+        ("Une idée, un geste ou une rencontre peut changer le cours d’une journée.", "Pensée positive"),
+        ("Je préfère avoir des questions auxquelles on ne peut pas répondre plutôt que des réponses qu’on ne peut pas remettre en question.", "Richard Feynman — prix Nobel de physique"),
+        ("Prends le temps de voir ce qui va bien, puis construis la suite.", "Pensée positive"),
+        ("Les grandes découvertes commencent souvent par une simple question.", "Pensée positive"),
     ]
-    daily_quote = daily_thoughts[NOW.timetuple().tm_yday % len(daily_thoughts)]
+    daily_quote, daily_quote_author = daily_thoughts[(NOW.timetuple().tm_yday - 1) % len(daily_thoughts)]
     (SITE / "briefing.txt").write_text(script, encoding="utf-8")
     audio_path = SITE / "briefing.mp3"
     if audio_script:
@@ -1077,7 +1082,7 @@ def main():
 *{{box-sizing:border-box}}body{{font-family:Inter,ui-sans-serif,system-ui,sans-serif;max-width:1120px;margin:0 auto;padding:0 1.25rem 3rem;line-height:1.65;color:var(--ink);background:var(--paper)}}
 header.hero{{margin:0 -1.25rem 2rem;padding:2.5rem max(1.25rem,calc((100% - 1060px)/2));background:#102e32;color:#fff;border-bottom:5px solid #72c3a9}}
 .kicker,.eyebrow{{text-transform:uppercase;letter-spacing:.09em;font-size:.72rem;font-weight:750;color:var(--muted);margin:0 0 .4rem}}
-.hero .kicker{{color:#9fe2cc}}.hero h1{{font-size:clamp(2rem,5vw,3.4rem);line-height:1.05;max-width:760px;margin:.4rem 0 1rem;letter-spacing:-.04em}}.hero p{{max-width:700px;color:#d5e7e2;margin:0}}.hero .daily-quote{{max-width:760px;margin:1.25rem 0 0;padding:.85rem 1rem;border-left:3px solid #72c3a9;background:#ffffff0d;border-radius:0 10px 10px 0;color:#e4f4ee;font-size:1.05rem;font-style:italic;line-height:1.5}}.hero .daily-quote:before{{content:"✦";color:#9fe2cc;font-style:normal;margin-right:.6rem}}
+.hero .kicker{{color:#9fe2cc}}.hero h1{{font-size:clamp(2rem,5vw,3.4rem);line-height:1.05;max-width:760px;margin:.4rem 0 1rem;letter-spacing:-.04em}}.hero p{{max-width:700px;color:#d5e7e2;margin:0}}.hero .daily-quote{{max-width:760px;margin:1.25rem 0 0;padding:.85rem 1rem;border-left:3px solid #72c3a9;background:#ffffff0d;border-radius:0 10px 10px 0;color:#e4f4ee;font-size:1.05rem;font-style:italic;line-height:1.5}}.hero .daily-quote:before{{content:"✦";color:#9fe2cc;font-style:normal;margin-right:.6rem}}\n.hero .daily-quote-author{{display:block;margin-top:.45rem;font-size:.88rem;font-style:normal;color:#b8d9d0}}
 h2{{font-size:1.55rem;letter-spacing:-.025em;margin:2.5rem 0 1rem;padding-bottom:.55rem;border-bottom:1px solid var(--line)}}h2:before{{content:"";display:inline-block;width:5px;height:1.2em;background:#72c3a9;vertical-align:-.2em;margin-right:.65rem;border-radius:4px}}
 h3{{font-size:1.12rem;line-height:1.35;margin:.35rem 0 .6rem}}a{{color:var(--accent);font-weight:700;text-decoration:none}}a:hover{{text-decoration:underline}}
 article.article-card{{display:grid;grid-template-columns:minmax(180px,30%) 1fr;gap:1.3rem;background:#fff;border:1px solid var(--line);border-radius:16px;overflow:hidden;margin:1rem 0;box-shadow:0 5px 20px #1c35300a}}
@@ -1087,7 +1092,7 @@ article.article-card{{display:grid;grid-template-columns:minmax(180px,30%) 1fr;g
 .weather{{padding:1.25rem 1.4rem;background:linear-gradient(135deg,#e7f1f0,#f3f8f6);border:1px solid #d3e5e1;border-radius:18px}}.weather h2{{margin:.1rem 0 1rem;border:0}}.weather h2:before{{display:none}}.weather-grid{{display:grid;grid-template-columns:1fr 1fr;gap:1rem}}.weather-card{{padding:1.1rem 1.2rem;background:#fff;border:1px solid #dce9e6;border-radius:14px;min-width:0}}.weather-label{{margin:0 0 .55rem;color:#53756d;font-size:.7rem;font-weight:800;letter-spacing:.1em}}.weather-main{{display:flex;align-items:center;gap:1rem;min-height:105px}}.weather-icon{{font-size:4rem;line-height:1;filter:drop-shadow(0 5px 5px #173b3015)}}.weather-condition{{margin:0;color:#47625d;font-size:.9rem;font-weight:700}}.weather-temperature{{margin:.1rem 0;font-size:2rem;line-height:1.2;font-weight:800;letter-spacing:-.04em;color:#183e3a}}.weather-subtitle{{margin:0;color:var(--muted);font-size:.75rem}}.weather-details{{margin:.8rem 0 0;padding-top:.65rem;border-top:1px solid #edf1ef;color:#52655f;font-size:.84rem}}.weather-source{{margin:.9rem 0 0;color:var(--muted);font-size:.78rem}}.hourly-heading{{margin:1.2rem 0 .6rem;font-size:1rem}}.hourly-scroll{{display:flex;gap:.65rem;overflow-x:auto;padding:.2rem .1rem .7rem}}.hourly-card{{flex:0 0 112px;padding:.75rem;background:#fff;border:1px solid var(--line);border-radius:12px;text-align:center}}.hourly-time{{margin:0;font-weight:800}}.hourly-icon{{display:block;font-size:1.7rem;margin:.3rem 0}}.hourly-temp{{margin:0;font-size:1.2rem;font-weight:800}}.hourly-condition{{margin:.2rem 0;min-height:2.5em;font-size:.75rem;color:var(--muted)}}.hourly-detail{{margin:0;font-size:.7rem;color:var(--muted)}}.player{{padding:1.1rem 1.3rem;background:#fff;border:1px solid var(--line);border-radius:16px}}audio{{width:100%;margin:.4rem 0}}.intro{{color:var(--muted);max-width:800px}}footer{{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.85rem}}
 @media(max-width:640px){{body{{padding:0 .85rem 2rem}}.hero{{margin-left:-.85rem!important;margin-right:-.85rem!important;padding:2rem .85rem!important}}.weather-grid{{grid-template-columns:1fr}}.weather-card{{padding:1rem}}.weather-icon{{font-size:3.4rem}}article.article-card{{grid-template-columns:1fr;gap:0}}.article-image-link,.article-image,.article-image-placeholder{{height:190px;min-height:190px;max-height:230px}}.article-content{{padding:1rem 1.1rem 1.2rem}}h2{{font-size:1.35rem}}}}
 </style></head><body>
-<header class="hero"><p class="kicker">Briefing quotidien · {NOW:%A %d %B %Y}</p><h1>L’essentiel du monde et de la recherche.</h1><p>Un regard sur l’actualité, les découvertes scientifiques et le confort des bâtiments, en quelques minutes.</p><blockquote class="daily-quote">« {html.escape(daily_quote)} »</blockquote></header>
+<header class="hero"><p class="kicker">Briefing quotidien · {NOW:%A %d %B %Y}</p><h1>L’essentiel du monde et de la recherche.</h1><p>Un regard sur l’actualité, les découvertes scientifiques et le confort des bâtiments, en quelques minutes.</p><blockquote class="daily-quote">« {html.escape(daily_quote)} »<span class="daily-quote-author"> — {html.escape(daily_quote_author)}</span></blockquote></header>
 <p class="intro">Les visuels proviennent des flux RSS ou des métadonnées des éditeurs lorsqu’ils sont disponibles. Ils servent d’aperçus et renvoient vers les publications originales.</p>
 {weather_html(weather_text)}
 <h2>Écouter le briefing</h2><div class="player">{"<audio controls src='briefing.mp3'></audio>" if audio_path.exists() else "<p>Audio indisponible pour cette exécution.</p>"}<p><a href="briefing.txt">Lire ou télécharger le texte complet ↗</a></p></div>
