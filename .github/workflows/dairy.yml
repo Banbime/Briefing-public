@@ -37,6 +37,8 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Generate briefing
+        env:
+          INFOCLIMAT_API_KEY: ${{ secrets.INFOCLIMAT_API_KEY }}
         run: python main.py
 
       - name: Configure Pages
