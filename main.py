@@ -71,26 +71,126 @@ def fetch_feed(name, url, category):
         print(f"Feed error {name}: {type(ex).__name__}")
         return []
 
+def _article_image_url(node, page_url):
+    """Return a usable image URL from an Elsevier figure/image node."""
+    if not node:
+        return ""
+    candidates = []
+    for attr in ("data-zoom-src", "data-src", "data-original", "src"):
+        value = node.get(attr, "")
+        if value:
+            candidates.append(value.strip())
+    srcset = node.get("srcset", "") or node.get("data-srcset", "")
+    if srcset:
+        # The last srcset entry is generally the largest available rendition.
+        for entry in srcset.split(","):
+            value = entry.strip().split(" ")[0]
+            if value:
+                candidates.append(value)
+    for value in candidates:
+        if value.startswith("//"):
+            value = "https:" + value
+        elif value and not value.startswith(("http://", "https://", "data:")):
+            value = requests.compat.urljoin(page_url, value)
+        if value.startswith(("http://", "https://")) and not re.search(r"\\.(pdf|svg)(?:[?#]|$)", value, re.I):
+            if not re.search(r"(logo|icon|avatar|spinner|placeholder)", value, re.I):
+                return value
+    return ""
+
+
+def _building_and_environment_image(soup, page_url):
+    """Prefer the graphical abstract, then a real article figure on ScienceDirect."""
+    # Elsevier page markup changes over time, so check several semantic selectors
+    # and class/id variants without relying on a single CSS class.
+    graphical_selectors = [
+        ".graphical-abstract", ".graphicalAbstract", ".graphicalabstract",
+        "[class*='graphical-abstract']", "[class*='graphicalAbstract']",
+        "[id*='graphical-abstract']", "[id*='graphicalAbstract']",
+        "figure[aria-label*='graphical' i]", "div[aria-label*='graphical' i]",
+    ]
+    for selector in graphical_selectors:
+        try:
+            for container in soup.select(selector):
+                for image_node in ([container] if container.name == "img" else container.select("img, source")):
+                    url = _article_image_url(image_node, page_url)
+                    if url:
+                        return url
+                # Some publisher markup uses a background image instead of <img>.
+                style = container.get("style", "")
+                match = re.search(r"background-image\\s*:\\s*url\\(['\\\"]?(.*?)['\\\"]?\\)", style, re.I)
+                if match:
+                    url = _article_image_url({"src": match.group(1)}, page_url)
+                    if url:
+                        return url
+        except Exception:
+            continue
+
+    # Fallback: inspect article figures, excluding decorative and supplementary
+    # content. Prefer images with a caption/alt text and the first numbered figure.
+    figure_candidates = []
+    for figure in soup.select("figure, .figure, [class*='figure']"):
+        label = " ".join([
+            figure.get("class", "") if isinstance(figure.get("class"), str) else " ".join(figure.get("class", [])),
+            figure.get("id", ""),
+            figure.get("aria-label", ""),
+            figure.get_text(" ", strip=True)[:500],
+        ]).lower()
+        if any(term in label for term in ("graphical abstract", "author photo", "supplementary material", "highlights")):
+            continue
+        images = figure.select("img, source")
+        for image_node in images:
+            alt = (image_node.get("alt", "") or "").strip().lower()
+            if any(term in alt for term in ("logo", "author", "avatar", "icon")):
+                continue
+            url = _article_image_url(image_node, page_url)
+            if url:
+                caption = figure.select_one("figcaption, .caption, [class*='caption']")
+                score = 0
+                if caption and len(caption.get_text(" ", strip=True)) > 15:
+                    score += 2
+                if re.search(r"(?:gr|fig|figure)[-_ ]?0*1\\b", url, re.I):
+                    score += 3
+                if re.search(r"ars\\.els-cdn\\.com|sciencedirect", url, re.I):
+                    score += 1
+                figure_candidates.append((score, url))
+                break
+    if figure_candidates:
+        figure_candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+        return figure_candidates[0][1]
+    return ""
+
+
 def fetch_article_image(item):
-    """Find a publisher-provided article illustration; do not fabricate or download it."""
-    if item.get("image_url"):
+    """Find publisher illustrations; for Building and Environment prefer its graphical abstract."""
+    is_building = item.get("category") == "building"
+    # Other sections keep the existing fast path and behavior.
+    if item.get("image_url") and not is_building:
         return item["image_url"]
     try:
         response = requests.get(item.get("link", ""), timeout=15, headers=HEADERS)
-        if response.status_code != 200 or "text/html" not in response.headers.get("content-type", ""):
-            return ""
-        soup = BeautifulSoup(response.text, "html.parser")
-        for meta in soup.find_all("meta"):
-            key = (meta.get("property") or meta.get("name") or "").strip().lower()
-            value = (meta.get("content") or "").strip()
-            if key in {"og:image", "og:image:url", "twitter:image", "twitter:image:src",
-                       "citation_thumbnail", "thumbnail"} and value.startswith(("https://", "http://")):
-                if not re.search(r"\.(pdf|svg)(?:[?#]|$)", value, re.I):
-                    item["image_url"] = value
-                    return value
+        if response.status_code == 200 and "text/html" in response.headers.get("content-type", ""):
+            soup = BeautifulSoup(response.text, "html.parser")
+            if is_building:
+                preferred = _building_and_environment_image(soup, response.url)
+                if preferred:
+                    item["image_url"] = preferred
+                    item["image_source"] = "graphical_abstract_or_figure"
+                    return preferred
+            # Keep the publisher metadata fallback for every section, including
+            # Building and Environment when no graphical abstract/figure is exposed.
+            for meta in soup.find_all("meta"):
+                key = (meta.get("property") or meta.get("name") or "").strip().lower()
+                value = (meta.get("content") or "").strip()
+                if key in {"og:image", "og:image:url", "twitter:image", "twitter:image:src",
+                           "citation_thumbnail", "thumbnail"} and value.startswith(("https://", "http://")):
+                    if not re.search(r"\\.(pdf|svg)(?:[?#]|$)", value, re.I):
+                        item["image_url"] = value
+                        item["image_source"] = "publisher_metadata"
+                        return value
     except Exception as ex:
         print(f"Article image lookup failed [{item.get('title','')[:70]}]: {type(ex).__name__}")
-    return ""
+    # Preserve the RSS image if one was supplied; otherwise leave the placeholder.
+    return item.get("image_url", "") or ""
 
 
 def enrich_images(items):
