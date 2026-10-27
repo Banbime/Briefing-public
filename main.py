@@ -67,30 +67,43 @@ def collect(group):
     return unique(all_items)
 
 def extract_abstract(page, fallback=""):
-    """Extract likely abstract text from publisher HTML, without inventing content."""
+    """Extract an abstract from publisher HTML metadata/content; never invent missing text."""
     soup = BeautifulSoup(page, "html.parser")
-    # Publisher-specific semantic selectors first.
+
+    # Nature / Springer Nature, Elsevier / ScienceDirect, and common article layouts.
     selectors = [
-        "div#Abs1-content", "div#Abs1", "section#Abs1", "div.c-article-section__content",
-        "div.NPara", "div.abstract", "section.abstract", "div#abstracts",
-        "div#abstract", "section#abstract", "div.article-abstract", "div.abstractInFull",
-        "div#eng-abstract", "div.abstract author", "div.hlFld-Abstract",
-        "div#preview-section-abstract", "section[aria-label='Abstract']"
+        "#Abs1-content", "#Abs1", "section#Abs1", ".c-article-section__content",
+        ".c-article-body .c-article-section", ".article__body .abstract",
+        ".NPara", "#abstracts", "#abstract", "section#abstract",
+        ".article-abstract", ".abstractInFull", "#eng-abstract",
+        ".hlFld-Abstract", "#preview-section-abstract",
+        "section[aria-label='Abstract']", "[data-testid='abstract']",
+        ".abstract", ".abstract-content", ".abstractSection",
+        ".article-section__abstract", ".article__abstract",
+        "section.abstract", "div.abstract"
     ]
     for selector in selectors:
-        node = soup.select_one(selector)
-        if node:
-            text = clean(node.get_text(" ", strip=True))
-            if len(text) >= 120:
-                return text[:9000], "publisher_page"
-    # Common metadata used by Nature, Elsevier, Crossref-friendly pages, etc.
-    for key in ("citation_abstract", "DC.Description", "description", "og:description"):
-        meta = soup.find("meta", attrs={"name": key}) or soup.find("meta", attrs={"property": key})
-        if meta and meta.get("content"):
-            text = clean(meta["content"])
-            if len(text) >= 120:
-                return text[:9000], "page_metadata"
-    # Some publishers put abstract in JSON-LD.
+        try:
+            for node in soup.select(selector)[:3]:
+                # Avoid grabbing an entire article body if a broad selector matches it.
+                text = clean(node.get_text(" ", strip=True))
+                if len(text) >= 120 and len(text) <= 12000:
+                    text = re.sub(r"^(Abstract|Summary|Résumé)\s*[:.]?\s*", "", text, flags=re.I)
+                    if len(text) >= 100:
+                        return text[:9000], "publisher_page"
+        except Exception:
+            continue
+
+    # Read metadata independent of capitalization (publishers vary in naming/case).
+    wanted = {"citation_abstract", "dc.description", "description", "og:description",
+              "twitter:description", "prism:teaser"}
+    for meta in soup.find_all("meta"):
+        key = (meta.get("name") or meta.get("property") or meta.get("itemprop") or "").strip().lower()
+        value = clean(meta.get("content", ""))
+        if key in wanted and len(value) >= 120 and not value.lower().startswith(("read more", "sign in")):
+            return value[:9000], "page_metadata"
+
+    # JSON-LD may contain abstract or description.
     for node in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(node.string or node.get_text())
@@ -98,16 +111,40 @@ def extract_abstract(page, fallback=""):
             while stack:
                 obj = stack.pop()
                 if isinstance(obj, dict):
-                    val = obj.get("abstract") or obj.get("description")
-                    if isinstance(val, str) and len(clean(val)) >= 120:
-                        return clean(val)[:9000], "structured_metadata"
+                    for key in ("abstract", "description"):
+                        val = obj.get(key)
+                        if isinstance(val, str) and len(clean(val)) >= 120:
+                            return clean(val)[:9000], "structured_metadata"
                     stack.extend(v for v in obj.values() if isinstance(v, (dict, list)))
                 elif isinstance(obj, list):
                     stack.extend(obj)
         except Exception:
             pass
+
     return clean(fallback)[:4000], ("rss_fallback" if fallback else "unavailable")
 
+
+def crossref_abstract(item):
+    """Try Crossref's public API when the publisher page does not expose an abstract."""
+    doi = item.get("doi", "")
+    if not doi:
+        match = re.search(r"(10\\.\\d{4,9}/[^?#\\s]+)", item.get("link", ""), flags=re.I)
+        if match:
+            doi = match.group(1).rstrip(".,;)")
+    if not doi:
+        return ""
+    try:
+        url = "https://api.crossref.org/works/" + requests.utils.quote(doi, safe="/")
+        r = requests.get(url, timeout=12, headers={**HEADERS, "User-Agent": "BriefingMatinal/1.0 (mailto:briefing@example.com)"})
+        if r.status_code != 200:
+            return ""
+        work = r.json().get("message", {})
+        abstract = clean(work.get("abstract", ""))
+        # Crossref abstracts are often wrapped in JATS tags; clean() strips these.
+        return abstract[:9000] if len(abstract) >= 120 else ""
+    except Exception as ex:
+        print("Crossref abstract lookup failed:", ex)
+        return ""
 def enrich_abstracts(items):
     # Fetch abstracts for selected scientific papers only; don't scrape every RSS result.
     for item in items:
@@ -119,6 +156,10 @@ def enrich_abstracts(items):
                 abstract, status = extract_abstract(response.text, item["summary"])
             else:
                 abstract, status = clean(item["summary"]), "rss_fallback"
+            if status in ("rss_fallback", "unavailable"):
+                crossref = crossref_abstract(item)
+                if crossref:
+                    abstract, status = crossref, "crossref"
             item["abstract"] = abstract
             item["abstract_status"] = status
             print(f"Abstract [{status}]: {item['title'][:100]}")
@@ -319,7 +360,7 @@ def item_html(x):
               "page_metadata":"Résumé récupéré dans les métadonnées de l’éditeur",
               "structured_metadata":"Résumé récupéré dans les métadonnées structurées",
               "rss_fallback":"Résumé RSS utilisé (abstract complet non trouvé)",
-              "unavailable":"Abstract inaccessible"}
+              "unavailable":"Abstract inaccessible",\n              "crossref":"Résumé récupéré via Crossref"}
     return f"""<article><h3>{html.escape(x['title'])}</h3>
 <p><small>{html.escape(x['source'])} · {html.escape(x.get('date',''))}</small></p>
 <p><strong>{html.escape(labels.get(status, 'Résumé disponible'))}</strong></p>
