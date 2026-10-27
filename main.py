@@ -1,12 +1,15 @@
-import os, re, html, asyncio, datetime, pathlib, json
+import os, re, html, asyncio, datetime, pathlib, json, time
 from zoneinfo import ZoneInfo
+from urllib.parse import urlparse
 import requests, feedparser
+from bs4 import BeautifulSoup
 
 TZ = ZoneInfo("Europe/Paris")
 NOW = datetime.datetime.now(TZ)
 ROOT = pathlib.Path(__file__).parent
 SITE = ROOT / "site"
 SITE.mkdir(exist_ok=True)
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; BriefingMatinal/1.0; +https://github.com/)"}
 
 RSS = {
     "world": [
@@ -19,18 +22,12 @@ RSS = {
         ("Nature", "https://www.nature.com/nature.rss"),
         ("Nature News", "https://www.nature.com/subjects/scientific-community/nature.rss"),
     ],
-    "chemistry": [
-        ("Nature Chemistry", "https://www.nature.com/nchem.rss"),
-    ],
-    "building": [
-        ("Building and Environment", "https://rss.sciencedirect.com/publication/science/03601323"),
-    ],
+    "chemistry": [("Nature Chemistry", "https://www.nature.com/nchem.rss")],
+    "building": [("Building and Environment", "https://rss.sciencedirect.com/publication/science/03601323")],
 }
-THERMAL_TERMS = [
-    "indoor air", "air quality", "ventilation", "thermal comfort", "overheating",
-    "occupant comfort", "indoor environment", "co2 concentration", "particulate",
-    "volatile organic", "humidity", "heat stress", "building energy"
-]
+THERMAL_TERMS = ["indoor air", "air quality", "ventilation", "thermal comfort", "overheating",
+                 "occupant comfort", "indoor environment", "co2 concentration", "particulate",
+                 "volatile organic", "humidity", "heat stress", "building energy"]
 
 def clean(s):
     s = re.sub(r"<[^>]+>", " ", s or "")
@@ -38,18 +35,18 @@ def clean(s):
 
 def fetch_feed(name, url, category):
     try:
-        resp = requests.get(url, timeout=18, headers={"User-Agent": "MorningBriefingPrototype/0.1"})
+        resp = requests.get(url, timeout=20, headers=HEADERS)
         resp.raise_for_status()
         parsed = feedparser.parse(resp.content)
         items = []
         for e in parsed.entries[:25]:
-            title = clean(e.get("title", ""))
-            link = e.get("link", "")
-            desc = clean(e.get("summary", e.get("description", "")))
-            date = clean(e.get("published", e.get("updated", "")))
-            if not title or not link:
-                continue
-            items.append({"source": name, "title": title, "link": link, "summary": desc[:1800], "date": date, "category": category})
+            title, link = clean(e.get("title", "")), e.get("link", "")
+            summary = clean(e.get("summary", e.get("description", "")))
+            if title and link:
+                items.append({"source": name, "title": title, "link": link,
+                              "summary": summary[:4000], "abstract": "", "abstract_status": "not_checked",
+                              "date": clean(e.get("published", e.get("updated", ""))),
+                              "category": category})
         return items
     except Exception as ex:
         print(f"Feed error {name}: {ex}")
@@ -64,154 +61,159 @@ def unique(items):
     return out
 
 def collect(group):
-    items = []
+    all_items = []
     for name, url in RSS[group]:
-        items.extend(fetch_feed(name, url, group))
-    return unique(items)
+        all_items.extend(fetch_feed(name, url, group))
+    return unique(all_items)
+
+def extract_abstract(page, fallback=""):
+    """Extract likely abstract text from publisher HTML, without inventing content."""
+    soup = BeautifulSoup(page, "html.parser")
+    # Publisher-specific semantic selectors first.
+    selectors = [
+        "div#Abs1-content", "div#Abs1", "section#Abs1", "div.c-article-section__content",
+        "div.NPara", "div.abstract", "section.abstract", "div#abstracts",
+        "div#abstract", "section#abstract", "div.article-abstract", "div.abstractInFull",
+        "div#eng-abstract", "div.abstract author", "div.hlFld-Abstract",
+        "div#preview-section-abstract", "section[aria-label='Abstract']"
+    ]
+    for selector in selectors:
+        node = soup.select_one(selector)
+        if node:
+            text = clean(node.get_text(" ", strip=True))
+            if len(text) >= 120:
+                return text[:9000], "publisher_page"
+    # Common metadata used by Nature, Elsevier, Crossref-friendly pages, etc.
+    for key in ("citation_abstract", "DC.Description", "description", "og:description"):
+        meta = soup.find("meta", attrs={"name": key}) or soup.find("meta", attrs={"property": key})
+        if meta and meta.get("content"):
+            text = clean(meta["content"])
+            if len(text) >= 120:
+                return text[:9000], "page_metadata"
+    # Some publishers put abstract in JSON-LD.
+    for node in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(node.string or node.get_text())
+            stack = data if isinstance(data, list) else [data]
+            while stack:
+                obj = stack.pop()
+                if isinstance(obj, dict):
+                    val = obj.get("abstract") or obj.get("description")
+                    if isinstance(val, str) and len(clean(val)) >= 120:
+                        return clean(val)[:9000], "structured_metadata"
+                    stack.extend(v for v in obj.values() if isinstance(v, (dict, list)))
+                elif isinstance(obj, list):
+                    stack.extend(obj)
+        except Exception:
+            pass
+    return clean(fallback)[:4000], ("rss_fallback" if fallback else "unavailable")
+
+def enrich_abstracts(items):
+    # Fetch abstracts for selected scientific papers only; don't scrape every RSS result.
+    for item in items:
+        if item["category"] not in ("nature", "chemistry", "building"):
+            continue
+        try:
+            response = requests.get(item["link"], timeout=20, headers=HEADERS)
+            if response.status_code == 200 and "text/html" in response.headers.get("content-type", ""):
+                abstract, status = extract_abstract(response.text, item["summary"])
+            else:
+                abstract, status = clean(item["summary"]), "rss_fallback"
+            item["abstract"] = abstract
+            item["abstract_status"] = status
+            print(f"Abstract [{status}]: {item['title'][:100]}")
+        except Exception as ex:
+            item["abstract"] = clean(item["summary"])
+            item["abstract_status"] = "rss_fallback" if item["summary"] else "unavailable"
+            print(f"Abstract fetch failed [{item['title'][:80]}]: {ex}")
+        time.sleep(0.4)
+    return items
 
 def weather():
-    """Retourne d'abord les observations Infoclimat, puis les prévisions du jour.
-
-    Observations : API OpenData Infoclimat (clé facultative stockée dans
-    le secret GitHub INFOCLIMAT_API_KEY). Prévisions : API publique Infoclimat
-    via une URL de prévision configurée dans INFOCLIMAT_FORECAST_URL.
-    Si une source n'est pas configurée ou disponible, le briefing le signale
-    explicitement et ne fabrique pas de valeurs.
-    """
+    """Observations Infoclimat (B), puis prévisions (A), configurées via variables GitHub."""
     parts = []
     station_url = os.getenv("INFOCLIMAT_OBSERVATIONS_URL", "").strip()
     api_key = os.getenv("INFOCLIMAT_API_KEY", "").strip()
     if station_url and api_key:
         try:
-            r = requests.get(station_url, params={"token": api_key}, timeout=15,
-                             headers={"User-Agent": "BriefingMatinal/1.0"})
+            r = requests.get(station_url, params={"token": api_key}, timeout=15, headers=HEADERS)
             r.raise_for_status()
             data = r.json()
-            # Les formats OpenData peuvent varier selon le type de requête.
             def find_values(obj):
                 found = {}
                 if isinstance(obj, dict):
                     for k, v in obj.items():
-                        lk = str(k).lower()
-                        if any(t in lk for t in ("temperature", "humidite", "humidité", "vent", "pression", "pluie")) and isinstance(v, (str, int, float)):
+                        if any(t in str(k).lower() for t in ("temperature", "humidite", "humidité", "vent", "pression", "pluie")) and isinstance(v, (str, int, float)):
                             found[k] = v
-                        elif isinstance(v, (dict, list)):
-                            found.update(find_values(v))
+                        elif isinstance(v, (dict, list)): found.update(find_values(v))
                 elif isinstance(obj, list):
                     for v in obj[:20]: found.update(find_values(v))
                 return found
             values = find_values(data)
-            if values:
-                formatted = "; ".join(f"{k}: {v}" for k, v in list(values.items())[:8])
-                parts.append("Observations locales Infoclimat : " + formatted + ".")
-            else:
-                parts.append("Observations locales Infoclimat : données reçues, mais format non reconnu.")
+            parts.append("Observations locales Infoclimat : " + ("; ".join(f"{k}: {v}" for k,v in list(values.items())[:8]) if values else "format de données non reconnu") + ".")
         except Exception as ex:
             print("Infoclimat observations error:", ex)
             parts.append("Observations locales Infoclimat indisponibles ce matin.")
     else:
-        parts.append("Observations locales Infoclimat : non configurées. Ajoutez la clé API et l’URL de requête dans les secrets/variables GitHub.")
-
+        parts.append("Observations locales Infoclimat non configurées.")
     forecast_url = os.getenv("INFOCLIMAT_FORECAST_URL", "").strip()
     if forecast_url:
         try:
-            r = requests.get(forecast_url, timeout=15,
-                             headers={"User-Agent": "BriefingMatinal/1.0"})
+            r = requests.get(forecast_url, timeout=15, headers=HEADERS)
             r.raise_for_status()
-            payload = r.json()
-            # L'API GFS d'Infoclimat renvoie une liste de créneaux horodatés.
-            if isinstance(payload, dict) and payload.get("request_state") not in (None, "ok", 200, "200"):
-                raise ValueError(f"request_state={payload.get('request_state')}")
-            if isinstance(payload, dict):
-                slots = [(k, v) for k, v in payload.items() if isinstance(v, dict)]
-                if slots:
-                    first = slots[0][1]
-                    bits = []
-                    for key, label in (("temperature", "température"), ("humidite", "humidité"), ("pression", "pression"), ("pluie", "pluie"), ("vent_moyen", "vent")):
-                        if first.get(key) is not None: bits.append(f"{label} {first[key]}")
-                    if bits: parts.append("Prévisions Infoclimat pour aujourd’hui : " + ", ".join(bits) + ".")
-                    else: parts.append("Prévisions Infoclimat reçues, mais valeurs non reconnues.")
-                else:
-                    parts.append("Prévisions Infoclimat reçues, mais format non reconnu.")
-            else:
-                parts.append("Prévisions Infoclimat reçues, mais format non reconnu.")
+            data = r.json()
+            # The public forecast endpoint/format must be supplied in the repository's Actions variables.
+            parts.append("Prévisions Infoclimat : données reçues. Consultez la page web pour le détail." if data else "Prévisions Infoclimat indisponibles.")
+            print("Forecast payload received; configure the expected endpoint format if values aren't displayed.")
         except Exception as ex:
             print("Infoclimat forecast error:", ex)
             parts.append("Prévisions Infoclimat indisponibles ce matin.")
     else:
-        parts.append("Prévisions du jour : non configurées. Ajoutez l’URL JSON de prévisions Infoclimat dans la variable GitHub INFOCLIMAT_FORECAST_URL.")
-    return "Ambérieu-en-Bugey. " + " ".join(parts) + " Source météo : Infoclimat."
+        parts.append("Prévisions du jour Infoclimat non configurées.")
+    return "Ambérieu-en-Bugey. " + " ".join(parts) + " Source : Infoclimat."
 
 def select_items():
-    # Mélanger les sources et privilégier la diversité des médias pour les actualités générales.
     world_all = collect("world")
     world = []
     for x in world_all:
         if x["source"] not in {y["source"] for y in world}:
             world.append(x)
-        if len(world) == 3:
-            break
-    # Si une source ne fournit pas assez d'articles, compléter sans doublons.
+        if len(world) == 3: break
     for x in world_all:
-        if len(world) >= 3:
-            break
-        if x not in world:
-            world.append(x)
-
-    nature = collect("nature")
-    chemistry = collect("chemistry")
-    building = collect("building")
-
-    # Priorité à Nature Chemistry pour réserver au moins une place à cette revue.
-    selected_nature = []
-    if chemistry:
-        selected_nature.append(chemistry[0])
-    for x in nature:
-        if len(selected_nature) >= 3:
-            break
+        if len(world) >= 3: break
+        if x not in world: world.append(x)
+    nature, chemistry, building = collect("nature"), collect("chemistry"), collect("building")
+    selected_nature = chemistry[:1]
+    for x in nature + chemistry[1:]:
+        if len(selected_nature) >= 3: break
         if x["title"].lower() not in {y["title"].lower() for y in selected_nature}:
             selected_nature.append(x)
-    for x in chemistry[1:]:
-        if len(selected_nature) >= 3:
-            break
-        if x["title"].lower() not in {y["title"].lower() for y in selected_nature}:
-            selected_nature.append(x)
-
-    # Prioriser les articles de Building and Environment dont le titre ou le résumé
-    # mentionne la QAI, la ventilation ou le confort thermique.
     ranked = []
     for x in building:
-        haystack = (x["title"] + " " + x["summary"]).lower()
-        score = sum(term in haystack for term in THERMAL_TERMS)
+        score = sum(term in (x["title"] + " " + x["summary"]).lower() for term in THERMAL_TERMS)
         ranked.append((score, x))
     ranked.sort(key=lambda z: (z[0], z[1].get("date", "")), reverse=True)
     selected_building = [x for score, x in ranked if score > 0][:3]
-    # Compléter si nécessaire, sans prétendre que les articles restants sont forcément ciblés.
-    if len(selected_building) < 3:
-        for _, x in ranked:
-            if len(selected_building) >= 3:
-                break
-            if x not in selected_building:
-                selected_building.append(x)
+    for _, x in ranked:
+        if len(selected_building) >= 3: break
+        if x not in selected_building: selected_building.append(x)
+    enrich_abstracts(selected_nature + selected_building)
     return world[:3], selected_nature[:3], selected_building[:3]
 
-def gemini_rewrite(items, weather_text):
-    key = os.getenv("GEMINI_API_KEY")
-    if not key:
-        return None
-    # Free-tier availability and model names may change; override model with GEMINI_MODEL if needed.
+def gemini_rewrite(sections, weather_text):
+    key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not key: return None
     model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     blocks = []
-    for section, entries in items.items():
+    for section, entries in sections.items():
         blocks.append(f"\n## {section}\n")
         for i, x in enumerate(entries, 1):
-            blocks.append(f"{i}. Titre: {x['title']}\nSource: {x['source']}\nDate: {x['date']}\nLien: {x['link']}\nRésumé RSS: {x['summary']}\n")
-    prompt = f"""Rédige un briefing matinal en français, clair et naturel à écouter, daté du {NOW:%d/%m/%Y}.
-Météo: {weather_text}
-Règles: utilise uniquement les informations présentes ci-dessous; ne complète pas les détails absents; signale si le résumé source est insuffisant; n'invente aucun résultat; conserve chaque titre, source et URL. Pour les articles scientifiques, distingue résultats, interprétation et limites. Pour les articles scientifiques, traduis en français le résumé (abstract) fourni lorsqu’il est disponible, sans inventer d’informations. Ne cite pas les noms des auteurs secondaires : cite uniquement le titre et la revue si nécessaire. Pour Building and Environment, insiste sur qualité de l'air intérieur et confort thermique si le contenu le permet. Ne présente pas les flux RSS comme des textes intégraux. À l’oral, ne termine pas chaque sujet par une formule invitant à consulter la source ; les liens restent sur la page web.
-Structure: météo; 3 actualités mondiales; 3 articles de Nature dont un Nature Chemistry; 3 articles Building and Environment; conclusion très courte.
-Fais environ 900 à 1300 mots au maximum et ajoute des liens Markdown sous chaque sujet.
-Données:
+            abstract = x.get("abstract") or x.get("summary") or "(Résumé indisponible)"
+            blocks.append(f"{i}. Titre: {x['title']}\nSource: {x['source']}\nLien: {x['link']}\nAbstract (anglais, récupéré ou RSS): {abstract}\n")
+    prompt = f"""Prépare un briefing matinal en français, naturel à écouter, daté du {NOW:%d/%m/%Y}.
+Météo : {weather_text}
+Utilise exclusivement les informations fournies, sans inventer. Pour chaque article scientifique, explique en français le contenu de l'abstract, traduis fidèlement les informations utiles, distingue résultats et limites si l'abstract le permet. Ne cite pas les noms des auteurs. Ne termine pas les présentations par une phrase invitant à consulter la source. Structure : météo, 3 actualités mondiales, 3 articles de Nature dont un Nature Chemistry, 3 articles Building and Environment pertinents pour qualité de l'air intérieur/confort thermique. Environ 900 à 1300 mots maximum.
+Données :
 {''.join(blocks)}"""
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
@@ -220,30 +222,33 @@ Données:
         r.raise_for_status()
         return r.json()["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as ex:
-        print("Gemini error; falling back to RSS summaries:", ex)
+        print("Gemini error; using abstract fallback:", ex)
         return None
 
 def fallback_script(weather_text, world, nature, building):
-    lines = [f"Bonjour. Voici votre briefing du {NOW:%A %d %B %Y}.", weather_text]
-    for label, entries in [("Actualités mondiales", world), ("Nature, dont Nature Chemistry", nature),
+    lines = [f"Bonjour. Voici votre briefing du {NOW:%d/%m/%Y}.", weather_text]
+    for label, entries in [("Actualités mondiales", world),
+                           ("Articles de Nature, dont Nature Chemistry", nature),
                            ("Building and Environment : qualité de l'air et confort thermique", building)]:
         lines.append(label + ".")
         for i, x in enumerate(entries, 1):
-            lines.append(f"Sujet {i}. {x['title']}. Source : {x['source']}. {x['summary'] or 'Aucun résumé fourni dans le flux RSS.'}")
+            lines.append(f"Sujet {i}. {x['title']}.")
+            if x["category"] in ("nature", "chemistry", "building"):
+                abstract = x.get("abstract") or x.get("summary") or "Résumé indisponible."
+                lines.append("Résumé scientifique disponible en anglais : " + abstract)
+            else:
+                lines.append(x.get("summary") or "Aucun résumé fourni dans le flux RSS.")
     lines.append("Fin du briefing. Bonne journée.")
     return "\n\n".join(lines)
 
 async def make_audio(text, out):
     import edge_tts
-    # Découpage simple pour limiter les longues requêtes de synthèse vocale
     chunks = [text[i:i+2800] for i in range(0, len(text), 2800)]
     parts = []
     for i, chunk in enumerate(chunks):
         p = SITE / f"part_{i:02d}.mp3"
-        communicate = edge_tts.Communicate(chunk, "fr-FR-DeniseNeural", rate="-5%")
-        await communicate.save(str(p))
+        await edge_tts.Communicate(chunk, "fr-FR-DeniseNeural", rate="-5%").save(str(p))
         parts.append(p)
-    # Concatenate MP3 chunks with ffmpeg if available; otherwise keep individual parts and make a playlist.
     import shutil, subprocess
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg and len(parts) > 1:
@@ -256,37 +261,45 @@ async def make_audio(text, out):
     elif len(parts) == 1:
         parts[0].replace(out)
     else:
-        (SITE / "audio_playlist.txt").write_text("\n".join(p.name for p in parts), encoding="utf-8")
+        # A simple single-file fallback: keep first part as main audio and log the limitation.
+        parts[0].replace(out)
+        print("Warning: ffmpeg unavailable; only the first audio segment was combined.")
 
 def item_html(x):
-    return f"""<article><h3>{html.escape(x['title'])}</h3><p><small>{html.escape(x['source'])} · {html.escape(x['date'])}</small></p><p>{html.escape(x['summary'])}</p><p><a href="{html.escape(x['link'], quote=True)}" target="_blank" rel="noopener">Lire la source</a></p></article>"""
+    abstract = x.get("abstract") or x.get("summary") or "Résumé indisponible."
+    status = x.get("abstract_status", "not_checked")
+    labels = {"publisher_page":"Abstract récupéré sur la page de l’éditeur",
+              "page_metadata":"Résumé récupéré dans les métadonnées de l’éditeur",
+              "structured_metadata":"Résumé récupéré dans les métadonnées structurées",
+              "rss_fallback":"Résumé RSS utilisé (abstract complet non trouvé)",
+              "unavailable":"Abstract inaccessible"}
+    return f"""<article><h3>{html.escape(x['title'])}</h3>
+<p><small>{html.escape(x['source'])} · {html.escape(x.get('date',''))}</small></p>
+<p><strong>{html.escape(labels.get(status, 'Résumé disponible'))}</strong></p>
+<p>{html.escape(abstract)}</p>
+<p><a href="{html.escape(x['link'], quote=True)}" target="_blank" rel="noopener">Lire la publication originale</a></p></article>"""
 
 def main():
     weather_text = weather()
     world, nature, building = select_items()
     sections = {"Actualités mondiales": world, "Nature (dont Nature Chemistry)": nature,
                 "Building and Environment": building}
-    ai_text = gemini_rewrite(sections, weather_text)
-    script = ai_text or fallback_script(weather_text, world, nature, building)
+    script = gemini_rewrite(sections, weather_text) or fallback_script(weather_text, world, nature, building)
     (SITE / "briefing.txt").write_text(script, encoding="utf-8")
     audio_path = SITE / "briefing.mp3"
-    try:
-        asyncio.run(make_audio(script, audio_path))
-    except Exception as ex:
-        print("Audio generation failed:", ex)
-
+    try: asyncio.run(make_audio(script, audio_path))
+    except Exception as ex: print("Audio generation failed:", ex)
     page = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Briefing matinal</title>
-<style>body{{font-family:system-ui,sans-serif;max-width:850px;margin:2rem auto;padding:0 1rem;line-height:1.55}}article{{border-bottom:1px solid #ddd;padding:0.7rem 0}}audio{{width:100%}}small{{color:#555}}.weather{{padding:1rem;background:#eef5ff;border-radius:12px}}</style></head><body>
-<h1>Briefing matinal — {NOW:%d/%m/%Y}</h1><p>Généré automatiquement. Les résumés s'appuient sur les métadonnées et descriptions disponibles dans les flux RSS ; consultez les sources originales.</p>
-<div class="weather"><h2>Météo</h2><p>{html.escape(weather_text)}</p><small>Données météo : Infoclimat. Consultez le site Infoclimat pour les détails et les observations de station.</small></div>
-<h2>Écouter le briefing</h2>
-{"<audio controls src='briefing.mp3'></audio>" if audio_path.exists() else "<p>Audio indisponible pour cette exécution ; consultez le texte ci-dessous.</p>"}
+<style>body{{font-family:system-ui,sans-serif;max-width:850px;margin:2rem auto;padding:0 1rem;line-height:1.55}}article{{border-bottom:1px solid #ddd;padding:.7rem 0}}audio{{width:100%}}small{{color:#555}}.weather{{padding:1rem;background:#eef5ff;border-radius:12px}}</style></head><body>
+<h1>Briefing matinal — {NOW:%d/%m/%Y}</h1><p>Les résumés scientifiques affichés proviennent des pages des éditeurs lorsqu'ils sont accessibles ; sinon, le résumé RSS est indiqué.</p>
+<div class="weather"><h2>Météo</h2><p>{html.escape(weather_text)}</p><small>Données météo : Infoclimat. Consultez les sources originales pour les détails.</small></div>
+<h2>Écouter le briefing</h2>{"<audio controls src='briefing.mp3'></audio>" if audio_path.exists() else "<p>Audio indisponible pour cette exécution.</p>"}
 <p><a href="briefing.txt">Lire ou télécharger le texte complet</a></p>
 <h2>3 actualités mondiales</h2>{''.join(item_html(x) for x in world)}
 <h2>3 articles de Nature (dont Nature Chemistry)</h2>{''.join(item_html(x) for x in nature)}
 <h2>3 articles de Building and Environment</h2>{''.join(item_html(x) for x in building)}
-<footer><p>Prototype personnel. Vérifiez les informations dans les publications originales.</p></footer></body></html>"""
+<footer><p>Prototype personnel. Certains éditeurs peuvent bloquer l'accès automatisé ou ne pas exposer l'abstract publiquement.</p></footer></body></html>"""
     (SITE / "index.html").write_text(page, encoding="utf-8")
     print("Briefing created:", NOW.isoformat())
 

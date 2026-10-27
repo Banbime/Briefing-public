@@ -1,42 +1,22 @@
-# Briefing matinal gratuit — prototype
+# Mise à jour du briefing : abstracts scientifiques
 
-Prototype pour produire chaque jour à 7 h (heure de Paris) une page web et un audio en français comprenant :
-- météo d'Ambérieu-en-Bugey ;
-- 3 actualités mondiales issues de flux RSS de médias ;
-- 3 articles de Nature, dont au moins 1 de Nature Chemistry ;
-- 3 articles de Building and Environment, filtrés sur la qualité de l'air intérieur et le confort thermique.
+## Installation
+1. Téléversez `main.py` à la racine du dépôt en remplaçant l'ancien après en avoir gardé une copie.
+2. Remplacez aussi `requirements.txt` par celui fourni ici (ajout de `beautifulsoup4`).
+3. Le workflow `.github/workflows/daily.yml` est inclus à titre de référence : remplacez-le seulement si vous souhaitez aussi ajouter les variables/secrets météo et Gemini au job. Le cron est en UTC, donc 07:00 UTC et non 07:00 heure française toute l'année.
+4. Lancez Actions > Build daily briefing > Run workflow.
 
-Le PC personnel n'a pas besoin d'être allumé : GitHub Actions exécute le script dans le cloud.
-Le site généré est publié sur GitHub Pages. Le dépôt et la page seront publics : ne pas y mettre de données privées.
+## Ce que fait ce script
+- Pour les 3 articles Nature et les 3 articles Building and Environment sélectionnés, il essaie de récupérer le résumé depuis la page de l'éditeur ou ses métadonnées.
+- La page web indique si le texte vient de la page éditeur, des métadonnées, ou si le script a dû utiliser le résumé RSS.
+- Si `GEMINI_API_KEY` est configurée, Gemini reçoit l'abstract récupéré et peut produire le briefing en français.
+- Sans Gemini, le fallback audio contient le résumé scientifique disponible en anglais. Il n'est donc pas traduit automatiquement sans service de traduction.
+- Certains éditeurs peuvent bloquer les requêtes automatisées ou ne pas rendre l'abstract complet accessible.
+- Les variables météo Infoclimat doivent correspondre à des URL/format valides ; ce script conserve les variables du prototype existant.
 
-## Gratuité et limites
-- GitHub Actions et GitHub Pages peuvent suffire gratuitement pour un petit projet personnel, sous réserve des quotas et conditions GitHub.
-- Open-Meteo fournit la météo sans clé API pour un usage non commercial.
-- La génération IA utilise la clé Gemini facultative `GEMINI_API_KEY`, obtenue via le niveau gratuit disponible de Google AI Studio. Les quotas et conditions peuvent changer. Sans clé, le prototype utilise les résumés et descriptions des flux RSS sans réécriture par IA.
-- L'audio utilise `edge-tts`, un outil communautaire qui s'appuie sur le service vocal en ligne de Microsoft ; ce n'est pas une garantie de service officiel ou permanent.
-- Les flux RSS et leur contenu peuvent changer, être indisponibles ou ne donner que des résumés. Le prototype ne contourne pas les paywalls et ne télécharge pas les textes intégrals protégés.
-- L'heure planifiée est 7 h Europe/Paris, mais GitHub Actions ne garantit pas une exécution à la minute exacte.
-
-## Mise en route depuis un Samsung Galaxy Z Fold6
-1. Ouvrir GitHub dans le navigateur du téléphone et créer un compte si nécessaire.
-2. Créer un dépôt **public** nommé `briefing-matinal` (public pour pouvoir utiliser GitHub Pages simplement et gratuitement).
-3. Importer les fichiers de ce projet ZIP dans le dépôt, en conservant leur arborescence.
-4. Dans **Settings > Pages**, choisir **GitHub Actions** comme source de déploiement.
-5. Dans **Settings > Secrets and variables > Actions**, ajouter un secret nommé `GEMINI_API_KEY` (facultatif). Pour éviter la clé, ne pas ajouter ce secret : les résumés RSS seront utilisés.
-6. Dans **Actions**, activer les workflows si GitHub le demande, puis lancer `Build daily briefing` avec **Run workflow** pour le premier essai.
-7. Ouvrir **Settings > Pages** pour trouver l'adresse du site. Ajouter cette page aux favoris de Chrome sur le téléphone.
-
-## Sources configurées
-- Le Monde (flux RSS de la une, à vérifier selon disponibilité)
-- New Scientist
-- Nature
-- Nature Chemistry
-- Building and Environment / ScienceDirect
-- Open-Meteo pour la météo
-
-Les flux peuvent évoluer. Si un flux ne fonctionne plus, il faudra remplacer son URL.
-
-## Remarques
-- La sélection des 3 articles de Nature inclut en priorité un article provenant du flux Nature Chemistry.
-- Building and Environment est filtré par mots-clés en anglais liés à indoor air quality, ventilation, thermal comfort, overheating et occupant comfort.
-- L'IA ne doit pas inventer les éléments manquants : les titres, dates et liens proviennent des flux RSS. Vérifier les articles originaux pour les décisions professionnelles.
+## Secrets/variables facultatifs
+- Secret `INFOCLIMAT_API_KEY`
+- Variable `INFOCLIMAT_OBSERVATIONS_URL`
+- Variable `INFOCLIMAT_FORECAST_URL`
+- Secret `GEMINI_API_KEY` (nécessaire pour la génération française du briefing à partir des abstracts)
+- Variable `GEMINI_MODEL` (facultatif)
