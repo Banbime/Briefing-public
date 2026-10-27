@@ -1062,6 +1062,97 @@ def item_html(x):
 </div></article>"""
 
 
+
+def _nba_json(url):
+    try:
+        response = requests.get(url, timeout=12, headers=HEADERS)
+        response.raise_for_status()
+        return response.json()
+    except Exception as ex:
+        print(f"NBA data unavailable ({type(ex).__name__})")
+        return {}
+
+
+def _nba_team_leader(event_id, team_id):
+    data = _nba_json(f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={event_id}")
+    for team in (data.get("boxscore", {}).get("players", []) or []):
+        if str((team.get("team", {}) or {}).get("id", "")) != str(team_id):
+            continue
+        for group in team.get("statistics", []) or []:
+            labels = [str(label).upper() for label in (group.get("labels", []) or [])]
+            athletes = group.get("athletes", []) or []
+            if "PTS" not in labels:
+                continue
+            pi = labels.index("PTS")
+            ai = labels.index("AST") if "AST" in labels else None
+            ri = labels.index("REB") if "REB" in labels else None
+            candidates = []
+            for entry in athletes:
+                athlete, stats = entry.get("athlete", {}) or {}, entry.get("stats", []) or []
+                if len(stats) <= pi or not athlete.get("displayName"):
+                    continue
+                try:
+                    points = int(float(stats[pi]))
+                    assists = int(float(stats[ai])) if ai is not None and len(stats) > ai else 0
+                    rebounds = int(float(stats[ri])) if ri is not None and len(stats) > ri else 0
+                except (TypeError, ValueError):
+                    continue
+                candidates.append((points, athlete["displayName"], assists, rebounds))
+            if candidates:
+                points, name, assists, rebounds = max(candidates, key=lambda row: row[0])
+                return {"name": name, "points": points, "assists": assists, "rebounds": rebounds}
+    return None
+
+
+def fetch_nba_night_scores():
+    now = datetime.datetime.now(TZ)
+    dates = [(now.date() - datetime.timedelta(days=1)).strftime("%Y%m%d"),
+             now.date().strftime("%Y%m%d")]
+    events = {}
+    for date in dates:
+        data = _nba_json(f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date}&limit=20")
+        for event in data.get("events", []) or []:
+            status = event.get("status", {}).get("type", {})
+            if status.get("completed") is True:
+                events[event.get("id", "")] = event
+    games = []
+    for event in events.values():
+        competitions = event.get("competitions", []) or []
+        if not competitions:
+            continue
+        competitors = competitions[0].get("competitors", []) or []
+        if len(competitors) < 2:
+            continue
+        game = {"id": event.get("id"), "date": event.get("date", ""), "teams": []}
+        for team in sorted(competitors, key=lambda item: 0 if item.get("homeAway") == "away" else 1):
+            info = team.get("team", {}) or {}
+            game["teams"].append({"id": info.get("id", ""), "name": info.get("displayName", "Équipe"),
+                                  "abbr": info.get("abbreviation", ""), "logo": info.get("logo", ""),
+                                  "score": team.get("score", "—"), "winner": team.get("winner", False)})
+        for team in game["teams"]:
+            team["leader"] = _nba_team_leader(game["id"], team["id"])
+        games.append(game)
+    games.sort(key=lambda game: game.get("date", ""), reverse=True)
+    return games
+
+
+def nba_scores_html(games):
+    cards = []
+    for game in games:
+        rows = []
+        for team in game["teams"]:
+            logo = ('<img class="nba-logo" src="' + html.escape(team["logo"], quote=True) + '" alt="" loading="lazy">'
+                    if team.get("logo") else '<span class="nba-logo-fallback">🏀</span>')
+            leader = team.get("leader")
+            stats = (f'<p class="nba-leader"><strong>{html.escape(leader["name"])}</strong> · {leader["points"]} pts / {leader["assists"]} pd / {leader["rebounds"]} reb</p>'
+                     if leader else '<p class="nba-leader nba-muted">Statistiques individuelles indisponibles</p>')
+            rows.append(f'<div class="nba-team {"nba-winner" if team.get("winner") else ""}"><div class="nba-team-line">{logo}<span class="nba-team-name">{html.escape(team["abbr"] or team["name"])}</span><strong class="nba-score">{html.escape(str(team["score"]))}</strong></div>{stats}</div>')
+        cards.append('<article class="nba-game">' + "".join(rows) + '</article>')
+    if not cards:
+        cards.append('<p class="nba-empty">Aucun match terminé trouvé pour la nuit écoulée.</p>')
+    return '<aside class="nba-sidebar"><div class="nba-panel"><p class="nba-eyebrow">NBA · cette nuit</p><h2>Scores NBA</h2>' + "".join(cards) + '<p class="nba-source">Logos et résultats : ESPN · actualisés à la génération du briefing.</p></div></aside>'
+
+
 def main():
     weather_text = weather()
     world, nature, building = select_items()
@@ -1161,6 +1252,7 @@ def main():
             print("Audio generation failed:", ex)
     else:
         audio_path.unlink(missing_ok=True)
+    nba_games = fetch_nba_night_scores()
     page = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#102e32"><title>Briefing matinal</title>
 <style>
@@ -1175,16 +1267,18 @@ article.article-card{{display:grid;grid-template-columns:minmax(180px,30%) 1fr;g
 .article-image-link{{display:block;min-height:210px;background:#e8efed}}.article-image{{display:block;width:100%;height:100%;min-height:210px;max-height:300px;object-fit:cover}}
 .article-image-placeholder{{min-height:210px;display:grid;place-items:center;background:linear-gradient(135deg,#d8e9e3,#e8e8dd 55%,#cbdedc);color:#42635d;font-weight:800;letter-spacing:.2em;font-size:.75rem}}
 .article-content{{padding:1rem 1.25rem 1.1rem 0}}.eyebrow{{font-size:.68rem}}.abstract-status{{display:inline-block;background:#e8f4ef;color:#236457;border-radius:99px;padding:.15rem .6rem;font-size:.74rem;font-weight:700;margin:.2rem 0 .4rem}}.abstract-text{{color:#3b4a53;margin:.4rem 0 .7rem}}.source-link{{font-size:.88rem}}
-.weather{{padding:1.25rem 1.4rem;background:linear-gradient(135deg,#e7f1f0,#f3f8f6);border:1px solid #d3e5e1;border-radius:18px}}.weather h2{{margin:.1rem 0 1rem;border:0}}.weather h2:before{{display:none}}.weather-grid{{display:grid;grid-template-columns:1fr 1fr;gap:1rem}}.weather-card{{padding:1.1rem 1.2rem;background:#fff;border:1px solid #dce9e6;border-radius:14px;min-width:0}}.weather-label{{margin:0 0 .55rem;color:#53756d;font-size:.7rem;font-weight:800;letter-spacing:.1em}}.weather-main{{display:flex;align-items:center;gap:1rem;min-height:105px}}.weather-icon{{font-size:4rem;line-height:1;filter:drop-shadow(0 5px 5px #173b3015)}}.weather-condition{{margin:0;color:#47625d;font-size:.9rem;font-weight:700}}.weather-temperature{{margin:.1rem 0;font-size:2rem;line-height:1.2;font-weight:800;letter-spacing:-.04em;color:#183e3a}}.weather-subtitle{{margin:0;color:var(--muted);font-size:.75rem}}.weather-details{{margin:.8rem 0 0;padding-top:.65rem;border-top:1px solid #edf1ef;color:#52655f;font-size:.84rem}}.weather-source{{margin:.9rem 0 0;color:var(--muted);font-size:.78rem}}.hourly-heading{{margin:1.2rem 0 .6rem;font-size:1rem}}.hourly-scroll{{display:flex;gap:.65rem;overflow-x:auto;padding:.2rem .1rem .7rem}}.hourly-card{{flex:0 0 112px;padding:.75rem;background:#fff;border:1px solid var(--line);border-radius:12px;text-align:center}}.hourly-time{{margin:0;font-weight:800}}.hourly-icon{{display:block;font-size:1.7rem;margin:.3rem 0}}.hourly-temp{{margin:0;font-size:1.2rem;font-weight:800}}.hourly-condition{{margin:.2rem 0;min-height:2.5em;font-size:.75rem;color:var(--muted)}}.hourly-detail{{margin:0;font-size:.7rem;color:var(--muted)}}.player{{padding:1.1rem 1.3rem;background:#fff;border:1px solid var(--line);border-radius:16px}}audio{{width:100%;margin:.4rem 0}}.intro{{color:var(--muted);max-width:800px}}footer{{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.85rem}}
-@media(max-width:640px){{body{{padding:0 .85rem 2rem}}.hero{{margin-left:-.85rem!important;margin-right:-.85rem!important;padding:2rem .85rem!important}}.weather-grid{{grid-template-columns:1fr}}.weather-card{{padding:1rem}}.weather-icon{{font-size:3.4rem}}article.article-card{{grid-template-columns:1fr;gap:0}}.article-image-link,.article-image,.article-image-placeholder{{height:190px;min-height:190px;max-height:230px}}.article-content{{padding:1rem 1.1rem 1.2rem}}h2{{font-size:1.35rem}}}}
+.weather{{padding:1.25rem 1.4rem;background:linear-gradient(135deg,#e7f1f0,#f3f8f6);border:1px solid #d3e5e1;border-radius:18px}}.weather h2{{margin:.1rem 0 1rem;border:0}}.weather h2:before{{display:none}}.weather-grid{{display:grid;grid-template-columns:1fr 1fr;gap:1rem}}.weather-card{{padding:1.1rem 1.2rem;background:#fff;border:1px solid #dce9e6;border-radius:14px;min-width:0}}.weather-label{{margin:0 0 .55rem;color:#53756d;font-size:.7rem;font-weight:800;letter-spacing:.1em}}.weather-main{{display:flex;align-items:center;gap:1rem;min-height:105px}}.weather-icon{{font-size:4rem;line-height:1;filter:drop-shadow(0 5px 5px #173b3015)}}.weather-condition{{margin:0;color:#47625d;font-size:.9rem;font-weight:700}}.weather-temperature{{margin:.1rem 0;font-size:2rem;line-height:1.2;font-weight:800;letter-spacing:-.04em;color:#183e3a}}.weather-subtitle{{margin:0;color:var(--muted);font-size:.75rem}}.weather-details{{margin:.8rem 0 0;padding-top:.65rem;border-top:1px solid #edf1ef;color:#52655f;font-size:.84rem}}.weather-source{{margin:.9rem 0 0;color:var(--muted);font-size:.78rem}}.hourly-heading{{margin:1.2rem 0 .6rem;font-size:1rem}}.hourly-scroll{{display:flex;gap:.65rem;overflow-x:auto;padding:.2rem .1rem .7rem}}.hourly-card{{flex:0 0 112px;padding:.75rem;background:#fff;border:1px solid var(--line);border-radius:12px;text-align:center}}.hourly-time{{margin:0;font-weight:800}}.hourly-icon{{display:block;font-size:1.7rem;margin:.3rem 0}}.hourly-temp{{margin:0;font-size:1.2rem;font-weight:800}}.hourly-condition{{margin:.2rem 0;min-height:2.5em;font-size:.75rem;color:var(--muted)}}.hourly-detail{{margin:0;font-size:.7rem;color:var(--muted)}}.content-layout{{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:1.5rem;align-items:start}}.briefing-main{{min-width:0}}.nba-sidebar{{min-width:0;position:sticky;top:1rem}}.nba-panel{{background:#fff;border:1px solid var(--line);border-radius:16px;padding:1rem}}.nba-panel h2{{margin:.15rem 0 .9rem;border:0;font-size:1.25rem}}.nba-panel h2:before{{display:none}}.nba-eyebrow{{margin:0;color:#146b65;font-size:.7rem;font-weight:850;letter-spacing:.1em;text-transform:uppercase}}.nba-game{{padding:.7rem 0;border-top:1px solid var(--line)}}.nba-team+.nba-team{{margin-top:.55rem}}.nba-team-line{{display:flex;align-items:center;gap:.5rem;min-width:0}}.nba-logo{{width:30px;height:30px;object-fit:contain;flex:0 0 30px}}.nba-team-name{{font-size:.86rem;font-weight:750;flex:1}}.nba-score{{font-size:1.05rem;font-variant-numeric:tabular-nums}}.nba-winner .nba-score{{color:#146b65}}.nba-leader{{margin:.15rem 0 0 38px;font-size:.72rem;line-height:1.4;color:#53636d}}.nba-leader strong{{color:var(--ink)}}.nba-muted,.nba-empty{{color:var(--muted);font-size:.82rem}}.nba-source{{margin:.75rem 0 0;padding-top:.6rem;border-top:1px solid var(--line);font-size:.68rem;color:var(--muted)}}.player{{padding:1.1rem 1.3rem;background:#fff;border:1px solid var(--line);border-radius:16px}}audio{{width:100%;margin:.4rem 0}}.intro{{color:var(--muted);max-width:800px}}footer{{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.85rem}}
+@media(max-width:860px){{.content-layout{{grid-template-columns:1fr}}.nba-sidebar{{position:static;grid-row:1}}}}@media(max-width:640px){{body{{padding:0 .85rem 2rem}}.hero{{margin-left:-.85rem!important;margin-right:-.85rem!important;padding:2rem .85rem!important}}.weather-grid{{grid-template-columns:1fr}}.weather-card{{padding:1rem}}.weather-icon{{font-size:3.4rem}}article.article-card{{grid-template-columns:1fr;gap:0}}.article-image-link,.article-image,.article-image-placeholder{{height:190px;min-height:190px;max-height:230px}}.article-content{{padding:1rem 1.1rem 1.2rem}}h2{{font-size:1.35rem}}}}
 </style></head><body>
 <header class="hero"><p class="kicker">Briefing quotidien · {NOW:%A %d %B %Y}</p><h1>L’essentiel du monde et de la recherche.</h1><p>Un regard sur l’actualité, les découvertes scientifiques et le confort des bâtiments, en quelques minutes.</p><blockquote class="daily-quote">« {html.escape(daily_quote)} »<span class="daily-quote-author"> — {html.escape(daily_quote_author)}</span></blockquote></header>
 <p class="intro">Les visuels proviennent des flux RSS ou des métadonnées des éditeurs lorsqu’ils sont disponibles. Ils servent d’aperçus et renvoient vers les publications originales.</p>
 {weather_html(weather_text)}
+<div class="content-layout"><main class="briefing-main">
 <h2>Écouter le briefing</h2><div class="player">{"<audio controls src='briefing.mp3'></audio>" if audio_path.exists() else "<p>Audio indisponible pour cette exécution.</p>"}<p><a href="briefing.txt">Lire ou télécharger le texte complet ↗</a></p></div>
 <h2>3 actualités mondiales</h2>{''.join(item_html(x) for x in world)}
 <h2>3 articles de Nature (dont Nature Chemistry)</h2>{''.join(item_html(x) for x in nature)}
 <h2>3 articles de Building and Environment</h2>{''.join(item_html(x) for x in building)}
+</main>{nba_scores_html(nba_games)}</div>
 <footer><p>Prototype personnel. Les images restent hébergées par leurs éditeurs et peuvent ne pas être disponibles si l’accès automatisé est bloqué. Certains éditeurs ne rendent pas l’abstract complet accessible.</p></footer></body></html>"""
     (SITE / "index.html").write_text(page, encoding="utf-8")
     print("Briefing created:", NOW.isoformat())
