@@ -42,14 +42,21 @@ def fetch_feed(name, url, category):
         for e in parsed.entries[:25]:
             title, link = clean(e.get("title", "")), e.get("link", "")
             summary = clean(e.get("summary", e.get("description", "")))
+            # Preserve DOI metadata when publishers expose it in the RSS feed.
+            doi = clean(e.get("prism_doi", e.get("doi", ""))).removeprefix("https://doi.org/").removeprefix("http://doi.org/")
+            if not doi:
+                identifier = clean(e.get("id", ""))
+                match = re.search(r"10\.\d{4,9}/[^\s<>]+", identifier, flags=re.I)
+                if match:
+                    doi = match.group(0).rstrip(".,;)")
             if title and link:
                 items.append({"source": name, "title": title, "link": link,
                               "summary": summary[:4000], "abstract": "", "abstract_status": "not_checked",
-                              "date": clean(e.get("published", e.get("updated", ""))),
+                              "doi": doi, "date": clean(e.get("published", e.get("updated", ""))),
                               "category": category})
         return items
     except Exception as ex:
-        print(f"Feed error {name}: {ex}")
+        print(f"Feed error {name}: {type(ex).__name__}")
         return []
 
 def unique(items):
@@ -124,49 +131,105 @@ def extract_abstract(page, fallback=""):
     return clean(fallback)[:4000], ("rss_fallback" if fallback else "unavailable")
 
 
-def crossref_abstract(item):
-    """Try Crossref's public API when the publisher page does not expose an abstract."""
-    doi = item.get("doi", "")
-    if not doi:
-        match = re.search(r"(10\\.\\d{4,9}/[^?#\\s]+)", item.get("link", ""), flags=re.I)
+def extract_doi(item, page=""):
+    """Find a DOI in RSS metadata, the article URL, or publisher page metadata."""
+    doi = (item.get("doi") or "").strip()
+    if doi:
+        return doi.removeprefix("https://doi.org/").removeprefix("http://doi.org/").rstrip(".,;)")
+    candidates = [item.get("link", "")]
+    if page:
+        soup = BeautifulSoup(page, "html.parser")
+        for meta in soup.find_all("meta"):
+            key = (meta.get("name") or meta.get("property") or "").strip().lower()
+            if key in {"citation_doi", "dc.identifier", "prism.doi"}:
+                candidates.insert(0, meta.get("content", ""))
+        for link in soup.find_all("a", href=True):
+            if "doi.org/" in link["href"].lower():
+                candidates.append(link["href"])
+    for candidate in candidates:
+        match = re.search(r"10\.\d{4,9}/[^\s<>\"'?#]+", html.unescape(candidate or ""), flags=re.I)
         if match:
-            doi = match.group(1).rstrip(".,;)")
+            return match.group(0).rstrip(".,;)")
+    return ""
+
+
+def crossref_abstract(item, page=""):
+    """Try Crossref's public API using a DOI; return empty when no abstract is registered."""
+    doi = extract_doi(item, page)
     if not doi:
         return ""
     try:
         url = "https://api.crossref.org/works/" + requests.utils.quote(doi, safe="/")
-        r = requests.get(url, timeout=12, headers={**HEADERS, "User-Agent": "BriefingMatinal/1.0 (mailto:briefing@example.com)"})
+        r = requests.get(url, timeout=12, headers={**HEADERS, "User-Agent": "BriefingMatinal/1.0"})
         if r.status_code != 200:
             return ""
         work = r.json().get("message", {})
         abstract = clean(work.get("abstract", ""))
-        # Crossref abstracts are often wrapped in JATS tags; clean() strips these.
         return abstract[:9000] if len(abstract) >= 120 else ""
     except Exception as ex:
-        print("Crossref abstract lookup failed:", ex)
+        print("Crossref abstract lookup failed:", type(ex).__name__)
         return ""
+
+
+def openalex_abstract(item, page=""):
+    """Rebuild an abstract from OpenAlex's public inverted index when available."""
+    doi = extract_doi(item, page)
+    if not doi:
+        return ""
+    try:
+        api_url = "https://api.openalex.org/works/https://doi.org/" + requests.utils.quote(doi, safe="/")
+        r = requests.get(api_url, timeout=12, headers=HEADERS)
+        if r.status_code != 200:
+            return ""
+        inverted = r.json().get("abstract_inverted_index")
+        if not isinstance(inverted, dict) or not inverted:
+            return ""
+        positions = {}
+        for word, indexes in inverted.items():
+            for index in indexes:
+                positions[index] = word
+        abstract = " ".join(positions[i] for i in sorted(positions))
+        abstract = clean(abstract)
+        return abstract[:9000] if len(abstract) >= 120 else ""
+    except Exception as ex:
+        print("OpenAlex abstract lookup failed:", type(ex).__name__)
+        return ""
+
 def enrich_abstracts(items):
-    # Fetch abstracts for selected scientific papers only; don't scrape every RSS result.
+    # Fetch abstracts only for selected scientific papers.
     for item in items:
         if item["category"] not in ("nature", "chemistry", "building"):
             continue
+        page = ""
         try:
             response = requests.get(item["link"], timeout=20, headers=HEADERS)
             if response.status_code == 200 and "text/html" in response.headers.get("content-type", ""):
-                abstract, status = extract_abstract(response.text, item["summary"])
+                page = response.text
+                abstract, status = extract_abstract(page, item["summary"])
             else:
                 abstract, status = clean(item["summary"]), "rss_fallback"
             if status in ("rss_fallback", "unavailable"):
-                crossref = crossref_abstract(item)
+                crossref = crossref_abstract(item, page)
                 if crossref:
                     abstract, status = crossref, "crossref"
+                else:
+                    openalex = openalex_abstract(item, page)
+                    if openalex:
+                        abstract, status = openalex, "openalex"
             item["abstract"] = abstract
             item["abstract_status"] = status
             print(f"Abstract [{status}]: {item['title'][:100]}")
         except Exception as ex:
+            # A publisher may block automated access; continue with RSS and DOI APIs.
             item["abstract"] = clean(item["summary"])
             item["abstract_status"] = "rss_fallback" if item["summary"] else "unavailable"
-            print(f"Abstract fetch failed [{item['title'][:80]}]: {ex}")
+            print(f"Abstract fetch failed [{item['title'][:80]}]: {type(ex).__name__}")
+            if item["abstract_status"] == "rss_fallback":
+                for getter, status in ((crossref_abstract, "crossref"), (openalex_abstract, "openalex")):
+                    value = getter(item, page)
+                    if value:
+                        item["abstract"], item["abstract_status"] = value, status
+                        break
         time.sleep(0.4)
     return items
 
@@ -334,7 +397,8 @@ def item_html(x):
               "structured_metadata":"Résumé récupéré dans les métadonnées structurées",
               "rss_fallback":"Résumé RSS utilisé (abstract complet non trouvé)",
               "unavailable":"Abstract inaccessible",
-              "crossref":"Résumé récupéré via Crossref"}
+              "crossref":"Résumé récupéré via Crossref",
+              "openalex":"Résumé récupéré via OpenAlex"}
     return f"""<article><h3>{html.escape(x['title'])}</h3>
 <p><small>{html.escape(x['source'])} · {html.escape(x.get('date',''))}</small></p>
 <p><strong>{html.escape(labels.get(status, 'Résumé disponible'))}</strong></p>
