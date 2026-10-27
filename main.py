@@ -509,20 +509,22 @@ def enrich_abstracts(items):
 
 def weather():
     """Conditions actuelles et prévisions du jour via Open-Meteo."""
+    weather._data = None
     parts = []
     try:
         params = {
             "latitude": 45.958,
             "longitude": 5.343,
             "timezone": "Europe/Paris",
-            "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,wind_speed_10m",
-            "daily": "temperature_2m_min,temperature_2m_max,precipitation_probability_max,wind_speed_10m_max,sunrise,sunset",
+            "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,wind_speed_10m,weather_code,is_day",
+            "daily": "weather_code,temperature_2m_min,temperature_2m_max,precipitation_probability_max,wind_speed_10m_max,sunrise,sunset",
             "forecast_days": 1
         }
         r = requests.get("https://api.open-meteo.com/v1/forecast", params=params,
                          timeout=20, headers=HEADERS)
         r.raise_for_status()
         data = r.json()
+        weather._data = data
         current = data.get("current", {})
         daily = data.get("daily", {})
         if not current:
@@ -569,6 +571,81 @@ def weather():
             parts.append("Prévisions du jour Open-Meteo indisponibles.")
 
     return "Ambérieu-en-Bugey. " + " ".join(parts) + " Sources : conditions actuelles et prévisions Open-Meteo."
+
+
+def weather_condition(code, is_day=True):
+    """Translate Open-Meteo WMO weather codes into a French label and pictogram."""
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        return ("🌤️", "Conditions météo")
+    if code == 0:
+        return ("☀️" if is_day else "🌙", "Ciel dégagé")
+    if code == 1:
+        return ("🌤️" if is_day else "🌙", "Globalement dégagé")
+    if code == 2:
+        return ("⛅", "Partiellement nuageux")
+    if code == 3:
+        return ("☁️", "Couvert")
+    if code in (45, 48):
+        return ("🌫️", "Brouillard")
+    if code in (51, 53, 55, 56, 57):
+        return ("🌦️", "Bruine")
+    if code in (61, 63, 65, 66, 67):
+        return ("🌧️", "Pluie")
+    if code in (71, 73, 75, 77):
+        return ("❄️", "Neige")
+    if code in (80, 81, 82):
+        return ("🌧️", "Averses")
+    if code in (85, 86):
+        return ("🌨️", "Averses de neige")
+    if code in (95, 96, 99):
+        return ("⛈️", "Orages")
+    return ("🌡️", "Conditions variables")
+
+
+def weather_html(weather_text):
+    """Build a visual current-weather and daily-forecast panel for the briefing page."""
+    data = getattr(weather, "_data", None)
+    if not data:
+        return f'<section class="weather"><h2>Météo à Ambérieu-en-Bugey</h2><p>{html.escape(weather_text)}</p><small>Données météo : Open-Meteo.</small></section>'
+
+    current = data.get("current", {})
+    daily = data.get("daily", {})
+    def first(key):
+        values = daily.get(key, [])
+        return values[0] if values else None
+    def fmt(value, suffix=""):
+        return "—" if value is None else f"{value}{suffix}"
+
+    current_icon, current_label = weather_condition(current.get("weather_code"), bool(current.get("is_day", 1)))
+    forecast_icon, forecast_label = weather_condition(first("weather_code"), True)
+    current_temp = fmt(current.get("temperature_2m"), "°")
+    feels_like = fmt(current.get("apparent_temperature"), "°")
+    humidity = fmt(current.get("relative_humidity_2m"), "%")
+    wind_now = fmt(current.get("wind_speed_10m"), " km/h")
+    tmin, tmax = first("temperature_2m_min"), first("temperature_2m_max")
+    rain = first("precipitation_probability_max")
+    wind_max = first("wind_speed_10m_max")
+    forecast_range = f"{fmt(tmin, '°')} / {fmt(tmax, '°')}"
+    rain_text = fmt(rain, "%")
+    wind_text = fmt(wind_max, " km/h")
+    return f"""<section class="weather">
+<h2>Météo à Ambérieu-en-Bugey</h2>
+<div class="weather-grid">
+<div class="weather-card current-weather">
+<p class="weather-label">MAINTENANT</p>
+<div class="weather-main"><span class="weather-icon" role="img" aria-label="{html.escape(current_label)}">{current_icon}</span><div><p class="weather-condition">{html.escape(current_label)}</p><p class="weather-temperature">{current_temp}</p></div></div>
+<p class="weather-details">Ressenti {feels_like} · Humidité {humidity} · Vent {wind_now}</p>
+</div>
+<div class="weather-card forecast-weather">
+<p class="weather-label">PRÉVISIONS DU JOUR</p>
+<div class="weather-main"><span class="weather-icon" role="img" aria-label="{html.escape(forecast_label)}">{forecast_icon}</span><div><p class="weather-condition">{html.escape(forecast_label)}</p><p class="weather-temperature">{forecast_range}</p><p class="weather-subtitle">Minimale / maximale</p></div></div>
+<p class="weather-details">Risque de précipitations : {rain_text} · Vent max. : {wind_text}</p>
+</div>
+</div>
+<p class="weather-source">Données météo : Open-Meteo · Prévisions actualisées à chaque génération du briefing.</p>
+</section>"""
 
 
 def is_open_access(item):
@@ -750,12 +827,12 @@ article.article-card{{display:grid;grid-template-columns:minmax(180px,30%) 1fr;g
 .article-image-link{{display:block;min-height:210px;background:#e8efed}}.article-image{{display:block;width:100%;height:100%;min-height:210px;max-height:300px;object-fit:cover}}
 .article-image-placeholder{{min-height:210px;display:grid;place-items:center;background:linear-gradient(135deg,#d8e9e3,#e8e8dd 55%,#cbdedc);color:#42635d;font-weight:800;letter-spacing:.2em;font-size:.75rem}}
 .article-content{{padding:1rem 1.25rem 1.1rem 0}}.eyebrow{{font-size:.68rem}}.abstract-status{{display:inline-block;background:#e8f4ef;color:#236457;border-radius:99px;padding:.15rem .6rem;font-size:.74rem;font-weight:700;margin:.2rem 0 .4rem}}.abstract-text{{color:#3b4a53;margin:.4rem 0 .7rem}}.source-link{{font-size:.88rem}}
-.weather{{padding:1.25rem 1.4rem;background:#e7f1f0;border:1px solid #d3e5e1;border-radius:16px}}.weather h2{{margin:.1rem 0 .6rem;border:0}}.weather h2:before{{display:none}}.player{{padding:1.1rem 1.3rem;background:#fff;border:1px solid var(--line);border-radius:16px}}audio{{width:100%;margin:.4rem 0}}.intro{{color:var(--muted);max-width:800px}}footer{{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.85rem}}
-@media(max-width:640px){{body{{padding:0 .85rem 2rem}}.hero{{margin-left:-.85rem!important;margin-right:-.85rem!important;padding:2rem .85rem!important}}article.article-card{{grid-template-columns:1fr;gap:0}}.article-image-link,.article-image,.article-image-placeholder{{height:190px;min-height:190px;max-height:230px}}.article-content{{padding:1rem 1.1rem 1.2rem}}h2{{font-size:1.35rem}}}}
+.weather{{padding:1.25rem 1.4rem;background:linear-gradient(135deg,#e7f1f0,#f3f8f6);border:1px solid #d3e5e1;border-radius:18px}}.weather h2{{margin:.1rem 0 1rem;border:0}}.weather h2:before{{display:none}}.weather-grid{{display:grid;grid-template-columns:1fr 1fr;gap:1rem}}.weather-card{{padding:1.1rem 1.2rem;background:#fff;border:1px solid #dce9e6;border-radius:14px;min-width:0}}.weather-label{{margin:0 0 .55rem;color:#53756d;font-size:.7rem;font-weight:800;letter-spacing:.1em}}.weather-main{{display:flex;align-items:center;gap:1rem;min-height:105px}}.weather-icon{{font-size:4rem;line-height:1;filter:drop-shadow(0 5px 5px #173b3015)}}.weather-condition{{margin:0;color:#47625d;font-size:.9rem;font-weight:700}}.weather-temperature{{margin:.1rem 0;font-size:2rem;line-height:1.2;font-weight:800;letter-spacing:-.04em;color:#183e3a}}.weather-subtitle{{margin:0;color:var(--muted);font-size:.75rem}}.weather-details{{margin:.8rem 0 0;padding-top:.65rem;border-top:1px solid #edf1ef;color:#52655f;font-size:.84rem}}.weather-source{{margin:.9rem 0 0;color:var(--muted);font-size:.78rem}}.player{{padding:1.1rem 1.3rem;background:#fff;border:1px solid var(--line);border-radius:16px}}audio{{width:100%;margin:.4rem 0}}.intro{{color:var(--muted);max-width:800px}}footer{{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.85rem}}
+@media(max-width:640px){{body{{padding:0 .85rem 2rem}}.hero{{margin-left:-.85rem!important;margin-right:-.85rem!important;padding:2rem .85rem!important}}.weather-grid{{grid-template-columns:1fr}}.weather-card{{padding:1rem}}.weather-icon{{font-size:3.4rem}}article.article-card{{grid-template-columns:1fr;gap:0}}.article-image-link,.article-image,.article-image-placeholder{{height:190px;min-height:190px;max-height:230px}}.article-content{{padding:1rem 1.1rem 1.2rem}}h2{{font-size:1.35rem}}}}
 </style></head><body>
 <header class="hero"><p class="kicker">Briefing quotidien · {NOW:%A %d %B %Y}</p><h1>L’essentiel du monde et de la recherche.</h1><p>Un regard sur l’actualité, les découvertes scientifiques et le confort des bâtiments, en quelques minutes.</p></header>
 <p class="intro">Les visuels proviennent des flux RSS ou des métadonnées des éditeurs lorsqu’ils sont disponibles. Ils servent d’aperçus et renvoient vers les publications originales.</p>
-<div class="weather"><h2>Météo à Ambérieu-en-Bugey</h2><p>{html.escape(weather_text)}</p><small>Données météo : Open-Meteo.</small></div>
+{weather_html(weather_text)}
 <h2>Écouter le briefing</h2><div class="player">{"<audio controls src='briefing.mp3'></audio>" if audio_path.exists() else "<p>Audio indisponible pour cette exécution.</p>"}<p><a href="briefing.txt">Lire ou télécharger le texte complet ↗</a></p></div>
 <h2>3 actualités mondiales</h2>{''.join(item_html(x) for x in world)}
 <h2>3 articles de Nature (dont Nature Chemistry)</h2>{''.join(item_html(x) for x in nature)}
