@@ -1075,7 +1075,7 @@ def _nba_json(url):
 
 def _nba_team_leader(event_id, team_id):
     data = _nba_json(f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={event_id}")
-    for team in (_nba_json(f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={event_id}").get("boxscore", {}).get("players", []) or []):
+    for team in (data.get("boxscore", {}).get("players", []) or []):
         if str((team.get("team", {}) or {}).get("id", "")) != str(team_id):
             continue
         for group in team.get("statistics", []) or []:
