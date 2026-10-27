@@ -517,6 +517,7 @@ def weather():
             "longitude": 5.343,
             "timezone": "Europe/Paris",
             "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,wind_speed_10m,weather_code,is_day",
+            "hourly": "temperature_2m,apparent_temperature,precipitation_probability,precipitation,weather_code,wind_speed_10m",
             "daily": "weather_code,temperature_2m_min,temperature_2m_max,precipitation_probability_max,wind_speed_10m_max,sunrise,sunset",
             "forecast_days": 1
         }
@@ -562,6 +563,36 @@ def weather():
             forecast += " ; lever du soleil " + str(sunrise)[-5:]
         if sunset:
             forecast += " ; coucher du soleil " + str(sunset)[-5:]
+        hourly = data.get("hourly", {})
+        hourly_times = hourly.get("time", [])
+        hourly_temps = hourly.get("temperature_2m", [])
+        hourly_rain = hourly.get("precipitation_probability", [])
+        hourly_codes = hourly.get("weather_code", [])
+        hourly_winds = hourly.get("wind_speed_10m", [])
+        now_hour = NOW.replace(minute=0, second=0, microsecond=0)
+        hourly_parts = []
+        for i, timestamp in enumerate(hourly_times):
+            try:
+                hour_dt = datetime.datetime.fromisoformat(timestamp).replace(tzinfo=TZ)
+            except (TypeError, ValueError):
+                continue
+            if hour_dt < now_hour or len(hourly_parts) >= 12:
+                continue
+            temp = hourly_temps[i] if i < len(hourly_temps) else None
+            chance = hourly_rain[i] if i < len(hourly_rain) else None
+            code = hourly_codes[i] if i < len(hourly_codes) else None
+            wind_hour = hourly_winds[i] if i < len(hourly_winds) else None
+            _, condition = weather_condition(code, 7 <= hour_dt.hour < 21)
+            segment = f"{hour_dt:%H} h : {condition.lower()}"
+            if temp is not None:
+                segment += f", {temp} degrés"
+            if chance is not None and chance >= 20:
+                segment += f", risque de pluie {chance} pour cent"
+            if wind_hour is not None and wind_hour >= 25:
+                segment += f", vent à {wind_hour} kilomètres par heure"
+            hourly_parts.append(segment)
+        if hourly_parts:
+            parts.append("Prévisions heure par heure pour les prochaines heures : " + ". ".join(hourly_parts) + ".")
         parts.append(forecast + ".")
     except Exception as ex:
         print("Open-Meteo weather error:", type(ex).__name__, str(ex)[:180])
@@ -630,6 +661,35 @@ def weather_html(weather_text):
     forecast_range = f"{fmt(tmin, '°')} / {fmt(tmax, '°')}"
     rain_text = fmt(rain, "%")
     wind_text = fmt(wind_max, " km/h")
+    hourly = data.get("hourly", {})
+    hourly_times = hourly.get("time", [])
+    hourly_temps = hourly.get("temperature_2m", [])
+    hourly_rain = hourly.get("precipitation_probability", [])
+    hourly_codes = hourly.get("weather_code", [])
+    hourly_winds = hourly.get("wind_speed_10m", [])
+    hourly_cards = []
+    now_hour = NOW.replace(minute=0, second=0, microsecond=0)
+    for i, timestamp in enumerate(hourly_times):
+        try:
+            hour_dt = datetime.datetime.fromisoformat(timestamp).replace(tzinfo=TZ)
+        except (TypeError, ValueError):
+            continue
+        if hour_dt < now_hour or len(hourly_cards) >= 12:
+            continue
+        temp = hourly_temps[i] if i < len(hourly_temps) else None
+        chance = hourly_rain[i] if i < len(hourly_rain) else None
+        code = hourly_codes[i] if i < len(hourly_codes) else None
+        wind_hour = hourly_winds[i] if i < len(hourly_winds) else None
+        icon, label = weather_condition(code, 7 <= hour_dt.hour < 21)
+        rain_hour = fmt(chance, "%")
+        wind_hour_text = fmt(wind_hour, " km/h")
+        hourly_cards.append(
+            f'<div class="hourly-card"><p class="hourly-time">{hour_dt:%H} h</p>'
+            f'<span class="hourly-icon" role="img" aria-label="{html.escape(label)}">{icon}</span>'
+            f'<p class="hourly-temp">{fmt(temp, "°")}</p><p class="hourly-condition">{html.escape(label)}</p>'
+            f'<p class="hourly-detail">Pluie {rain_hour}<br>Vent {wind_hour_text}</p></div>'
+        )
+    hourly_html = "".join(hourly_cards) if hourly_cards else '<p>Prévisions horaires indisponibles.</p>'
     return f"""<section class="weather">
 <h2>Météo à Ambérieu-en-Bugey</h2>
 <div class="weather-grid">
@@ -644,6 +704,8 @@ def weather_html(weather_text):
 <p class="weather-details">Risque de précipitations : {rain_text} · Vent max. : {wind_text}</p>
 </div>
 </div>
+<h3 class="hourly-heading">Prévisions heure par heure</h3>
+<div class="hourly-scroll">{hourly_html}</div>
 <p class="weather-source">Données météo : Open-Meteo · Prévisions actualisées à chaque génération du briefing.</p>
 </section>"""
 
@@ -752,6 +814,67 @@ def fallback_script(weather_text, world, nature, building):
     lines.append("Fin du briefing. Bonne journée.")
     return "\n\n".join(lines)
 
+def get_argos_translator():
+    """Load the free local English-to-French Argos Translate model."""
+    try:
+        import argostranslate.package
+        import argostranslate.translate
+        installed = argostranslate.translate.get_installed_languages()
+        en = next((lang for lang in installed if lang.code == "en"), None)
+        fr = next((lang for lang in installed if lang.code == "fr"), None)
+        if en and fr:
+            translation = en.get_translation(fr)
+            if translation:
+                return translation
+        argostranslate.package.update_package_index()
+        packages = argostranslate.package.get_available_packages()
+        package = next(p for p in packages if p.from_code == "en" and p.to_code == "fr")
+        package_path = package.download()
+        argostranslate.package.install_from_path(package_path)
+        installed = argostranslate.translate.get_installed_languages()
+        en = next(lang for lang in installed if lang.code == "en")
+        fr = next(lang for lang in installed if lang.code == "fr")
+        return en.get_translation(fr)
+    except Exception as ex:
+        raise RuntimeError("Traduction française Argos indisponible") from ex
+
+
+def translate_for_audio(text, translator, source_is_english=True):
+    """Translate audio text locally when the source is English; keep French text intact."""
+    value = clean(text)
+    if not value or not source_is_english:
+        return value
+    try:
+        return translator.translate(value)
+    except Exception as ex:
+        raise RuntimeError("Échec de traduction d'un segment audio") from ex
+
+
+def build_audio_script(weather_text, world, nature, building):
+    """Create a French-only audio script independently of the website's written briefing."""
+    translator = get_argos_translator()
+    lines = [f"Bonjour. Voici votre briefing du {NOW:%d/%m/%Y}.", weather_text]
+    sections = [
+        ("Les actualités mondiales", world, lambda x: x.get("source", "") not in {"Le Monde — À la une"}),
+        ("Les publications scientifiques de Nature, dont Nature Chemistry", nature, lambda x: True),
+        ("Les publications de Building and Environment sur la qualité de l'air et le confort thermique", building, lambda x: True),
+    ]
+    for label, entries, is_english in sections:
+        lines.append(label + ".")
+        for index, item in enumerate(entries, 1):
+            english = is_english(item)
+            title = translate_for_audio(item.get("title", ""), translator, english)
+            lines.append(f"Article {index} : {title}.")
+            summary = item.get("abstract") or item.get("summary") or ""
+            if summary:
+                translated = translate_for_audio(summary, translator, english)
+                lines.append(translated)
+            else:
+                lines.append("Le résumé détaillé n'est pas disponible.")
+    lines.append("Fin du briefing. Bonne journée.")
+    return "\n\n".join(lines)
+
+
 async def make_audio(text, out):
     import edge_tts
     chunks = [text[i:i+2800] for i in range(0, len(text), 2800)]
@@ -809,6 +932,12 @@ def main():
     sections = {"Actualités mondiales": world, "Nature (dont Nature Chemistry)": nature,
                 "Building and Environment": building}
     script = gemini_rewrite(sections, weather_text) or fallback_script(weather_text, world, nature, building)
+    audio_script = None
+    try:
+        audio_script = build_audio_script(weather_text, world, nature, building)
+    except Exception as ex:
+        print("French audio translation failed; refusing to publish untranslated audio:", type(ex).__name__, str(ex))
+
     daily_thoughts = [
         "Chaque petit progrès prépare les grandes avancées.",
         "La curiosité transforme une journée ordinaire en occasion d’apprendre.",
@@ -821,8 +950,13 @@ def main():
     daily_quote = daily_thoughts[NOW.timetuple().tm_yday % len(daily_thoughts)]
     (SITE / "briefing.txt").write_text(script, encoding="utf-8")
     audio_path = SITE / "briefing.mp3"
-    try: asyncio.run(make_audio(script, audio_path))
-    except Exception as ex: print("Audio generation failed:", ex)
+    if audio_script:
+        try:
+            asyncio.run(make_audio(audio_script, audio_path))
+        except Exception as ex:
+            print("Audio generation failed:", ex)
+    else:
+        audio_path.unlink(missing_ok=True)
     page = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#102e32"><title>Briefing matinal</title>
 <style>
@@ -837,7 +971,7 @@ article.article-card{{display:grid;grid-template-columns:minmax(180px,30%) 1fr;g
 .article-image-link{{display:block;min-height:210px;background:#e8efed}}.article-image{{display:block;width:100%;height:100%;min-height:210px;max-height:300px;object-fit:cover}}
 .article-image-placeholder{{min-height:210px;display:grid;place-items:center;background:linear-gradient(135deg,#d8e9e3,#e8e8dd 55%,#cbdedc);color:#42635d;font-weight:800;letter-spacing:.2em;font-size:.75rem}}
 .article-content{{padding:1rem 1.25rem 1.1rem 0}}.eyebrow{{font-size:.68rem}}.abstract-status{{display:inline-block;background:#e8f4ef;color:#236457;border-radius:99px;padding:.15rem .6rem;font-size:.74rem;font-weight:700;margin:.2rem 0 .4rem}}.abstract-text{{color:#3b4a53;margin:.4rem 0 .7rem}}.source-link{{font-size:.88rem}}
-.weather{{padding:1.25rem 1.4rem;background:linear-gradient(135deg,#e7f1f0,#f3f8f6);border:1px solid #d3e5e1;border-radius:18px}}.weather h2{{margin:.1rem 0 1rem;border:0}}.weather h2:before{{display:none}}.weather-grid{{display:grid;grid-template-columns:1fr 1fr;gap:1rem}}.weather-card{{padding:1.1rem 1.2rem;background:#fff;border:1px solid #dce9e6;border-radius:14px;min-width:0}}.weather-label{{margin:0 0 .55rem;color:#53756d;font-size:.7rem;font-weight:800;letter-spacing:.1em}}.weather-main{{display:flex;align-items:center;gap:1rem;min-height:105px}}.weather-icon{{font-size:4rem;line-height:1;filter:drop-shadow(0 5px 5px #173b3015)}}.weather-condition{{margin:0;color:#47625d;font-size:.9rem;font-weight:700}}.weather-temperature{{margin:.1rem 0;font-size:2rem;line-height:1.2;font-weight:800;letter-spacing:-.04em;color:#183e3a}}.weather-subtitle{{margin:0;color:var(--muted);font-size:.75rem}}.weather-details{{margin:.8rem 0 0;padding-top:.65rem;border-top:1px solid #edf1ef;color:#52655f;font-size:.84rem}}.weather-source{{margin:.9rem 0 0;color:var(--muted);font-size:.78rem}}.player{{padding:1.1rem 1.3rem;background:#fff;border:1px solid var(--line);border-radius:16px}}audio{{width:100%;margin:.4rem 0}}.intro{{color:var(--muted);max-width:800px}}footer{{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.85rem}}
+.weather{{padding:1.25rem 1.4rem;background:linear-gradient(135deg,#e7f1f0,#f3f8f6);border:1px solid #d3e5e1;border-radius:18px}}.weather h2{{margin:.1rem 0 1rem;border:0}}.weather h2:before{{display:none}}.weather-grid{{display:grid;grid-template-columns:1fr 1fr;gap:1rem}}.weather-card{{padding:1.1rem 1.2rem;background:#fff;border:1px solid #dce9e6;border-radius:14px;min-width:0}}.weather-label{{margin:0 0 .55rem;color:#53756d;font-size:.7rem;font-weight:800;letter-spacing:.1em}}.weather-main{{display:flex;align-items:center;gap:1rem;min-height:105px}}.weather-icon{{font-size:4rem;line-height:1;filter:drop-shadow(0 5px 5px #173b3015)}}.weather-condition{{margin:0;color:#47625d;font-size:.9rem;font-weight:700}}.weather-temperature{{margin:.1rem 0;font-size:2rem;line-height:1.2;font-weight:800;letter-spacing:-.04em;color:#183e3a}}.weather-subtitle{{margin:0;color:var(--muted);font-size:.75rem}}.weather-details{{margin:.8rem 0 0;padding-top:.65rem;border-top:1px solid #edf1ef;color:#52655f;font-size:.84rem}}.weather-source{{margin:.9rem 0 0;color:var(--muted);font-size:.78rem}}.hourly-heading{{margin:1.2rem 0 .6rem;font-size:1rem}}.hourly-scroll{{display:flex;gap:.65rem;overflow-x:auto;padding:.2rem .1rem .7rem}}.hourly-card{{flex:0 0 112px;padding:.75rem;background:#fff;border:1px solid var(--line);border-radius:12px;text-align:center}}.hourly-time{{margin:0;font-weight:800}}.hourly-icon{{display:block;font-size:1.7rem;margin:.3rem 0}}.hourly-temp{{margin:0;font-size:1.2rem;font-weight:800}}.hourly-condition{{margin:.2rem 0;min-height:2.5em;font-size:.75rem;color:var(--muted)}}.hourly-detail{{margin:0;font-size:.7rem;color:var(--muted)}}.player{{padding:1.1rem 1.3rem;background:#fff;border:1px solid var(--line);border-radius:16px}}audio{{width:100%;margin:.4rem 0}}.intro{{color:var(--muted);max-width:800px}}footer{{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.85rem}}
 @media(max-width:640px){{body{{padding:0 .85rem 2rem}}.hero{{margin-left:-.85rem!important;margin-right:-.85rem!important;padding:2rem .85rem!important}}.weather-grid{{grid-template-columns:1fr}}.weather-card{{padding:1rem}}.weather-icon{{font-size:3.4rem}}article.article-card{{grid-template-columns:1fr;gap:0}}.article-image-link,.article-image,.article-image-placeholder{{height:190px;min-height:190px;max-height:230px}}.article-content{{padding:1rem 1.1rem 1.2rem}}h2{{font-size:1.35rem}}}}
 </style></head><body>
 <header class="hero"><p class="kicker">Briefing quotidien · {NOW:%A %d %B %Y}</p><h1>L’essentiel du monde et de la recherche.</h1><p>Un regard sur l’actualité, les découvertes scientifiques et le confort des bâtiments, en quelques minutes.</p><blockquote class="daily-quote">« {html.escape(daily_quote)} »</blockquote></header>
