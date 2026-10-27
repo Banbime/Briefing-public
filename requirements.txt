@@ -2,3 +2,4 @@ requests>=2.31.0
 feedparser>=6.0.11
 edge-tts>=6.1.12
 beautifulsoup4>=4.12.3
+argostranslate>=1.9.6
