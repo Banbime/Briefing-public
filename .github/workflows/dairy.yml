@@ -38,7 +38,7 @@ jobs:
 
       - name: Generate briefing
         env:
-          INFOCLIMAT_API_KEY: ${{ secrets.INFOCLIMAT_API_KEY }}
+          INFOCLIMAT_FORECAST_URL: ${{ vars.INFOCLIMAT_FORECAST_URL }}
         run: python main.py
 
       - name: Configure Pages
