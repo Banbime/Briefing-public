@@ -50,3 +50,22 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      # Send the push notification only after GitHub Pages deployment succeeds.
+      - name: Notify phone via ntfy
+        if: success()
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          if [ -z "$NTFY_TOPIC" ]; then
+            echo "::warning::NTFY_TOPIC is not configured; skipping phone notification."
+            exit 0
+          fi
+
+          curl --fail --silent --show-error \
+            -H "Title: Briefing du jour disponible" \
+            -H "Priority: default" \
+            -H "Tags: newspaper" \
+            -H "Click: https://banbime.github.io/Briefing-public/" \
+            -d "Le nouveau briefing a été généré et publié avec succès. Bonne lecture !" \
+            "https://ntfy.sh/$NTFY_TOPIC"
