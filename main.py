@@ -120,6 +120,8 @@ def _building_and_environment_image(soup, page_url):
                     url = _article_image_url({"src": match.group(1)}, page_url)
                     if url:
                         return url
+        except Exception:
+            continue
 
     # Elsevier pages may expose the image only through JSON-LD metadata.
     for script in soup.select('script[type="application/ld+json"]'):
