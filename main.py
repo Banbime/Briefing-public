@@ -1252,6 +1252,7 @@ def main():
             print("Audio generation failed:", ex)
     else:
         audio_path.unlink(missing_ok=True)
+    nba_games = fetch_nba_night_scores()
     page = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#102e32"><title>Briefing matinal</title>
 <style>
@@ -1272,10 +1273,12 @@ article.article-card{{display:grid;grid-template-columns:minmax(180px,30%) 1fr;g
 <header class="hero"><p class="kicker">Briefing quotidien · {NOW:%A %d %B %Y}</p><h1>L’essentiel du monde et de la recherche.</h1><p>Un regard sur l’actualité, les découvertes scientifiques et le confort des bâtiments, en quelques minutes.</p><blockquote class="daily-quote">« {html.escape(daily_quote)} »<span class="daily-quote-author"> — {html.escape(daily_quote_author)}</span></blockquote></header>
 <p class="intro">Les visuels proviennent des flux RSS ou des métadonnées des éditeurs lorsqu’ils sont disponibles. Ils servent d’aperçus et renvoient vers les publications originales.</p>
 {weather_html(weather_text)}
+<div class="content-layout"><main class="briefing-main">
 <h2>Écouter le briefing</h2><div class="player">{"<audio controls src='briefing.mp3'></audio>" if audio_path.exists() else "<p>Audio indisponible pour cette exécution.</p>"}<p><a href="briefing.txt">Lire ou télécharger le texte complet ↗</a></p></div>
 <h2>3 actualités mondiales</h2>{''.join(item_html(x) for x in world)}
 <h2>3 articles de Nature (dont Nature Chemistry)</h2>{''.join(item_html(x) for x in nature)}
 <h2>3 articles de Building and Environment</h2>{''.join(item_html(x) for x in building)}
+</main>{nba_scores_html(nba_games)}</div>
 <footer><p>Prototype personnel. Les images restent hébergées par leurs éditeurs et peuvent ne pas être disponibles si l’accès automatisé est bloqué. Certains éditeurs ne rendent pas l’abstract complet accessible.</p></footer></body></html>"""
     (SITE / "index.html").write_text(page, encoding="utf-8")
     print("Briefing created:", NOW.isoformat())
