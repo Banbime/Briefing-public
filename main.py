@@ -39,7 +39,7 @@ def fetch_feed(name, url, category):
         resp.raise_for_status()
         parsed = feedparser.parse(resp.content)
         items = []
-        for e in parsed.entries[:25]:
+        for e in parsed.entries[:100]:
             title, link = clean(e.get("title", "")), e.get("link", "")
             summary = clean(e.get("summary", e.get("description", "")))
             # Preserve DOI metadata when publishers expose it in the RSS feed.
@@ -742,6 +742,58 @@ def is_open_access(item):
         return False
 
 
+def publication_datetime(value):
+    """Parse RSS publication dates into timezone-aware datetimes."""
+    if not value:
+        return None
+    try:
+        from email.utils import parsedate_to_datetime
+        parsed = parsedate_to_datetime(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=TZ)
+        return parsed.astimezone(TZ)
+    except (TypeError, ValueError, OverflowError):
+        pass
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=TZ)
+        return parsed.astimezone(TZ)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def scientific_papers_from_last_year(items):
+    """Keep only papers with a verifiable publication date in the last 365 days."""
+    cutoff = NOW - datetime.timedelta(days=365)
+    eligible = []
+    for item in items:
+        published = publication_datetime(item.get("date", ""))
+        if published and cutoff <= published <= NOW + datetime.timedelta(days=1):
+            item["_published_dt"] = published
+            eligible.append(item)
+    return eligible
+
+
+def rotating_selection(items, count, seed_offset=0):
+    """Rotate through the eligible date-sorted pool so every day isn't only the newest papers."""
+    ordered = sorted(items, key=lambda item: item.get("_published_dt", NOW))
+    if len(ordered) <= count:
+        return ordered
+    start = (NOW.timetuple().tm_yday + seed_offset) % len(ordered)
+    rotated = ordered[start:] + ordered[:start]
+    # Spread picks through the rotated pool rather than taking adjacent RSS entries.
+    step = max(1, len(rotated) // count)
+    chosen = rotated[::step][:count]
+    if len(chosen) < count:
+        for item in rotated:
+            if item not in chosen:
+                chosen.append(item)
+            if len(chosen) == count:
+                break
+    return chosen
+
+
 def select_items():
     world_all = collect("world")
     world = []
@@ -752,24 +804,22 @@ def select_items():
     for x in world_all:
         if len(world) >= 3: break
         if x not in world: world.append(x)
-    nature = [x for x in collect("nature") if is_open_access(x)]
-    chemistry = [x for x in collect("chemistry") if is_open_access(x)]
-    building = [x for x in collect("building") if is_open_access(x)]
-    selected_nature = chemistry[:1]
-    for x in nature + chemistry[1:]:
-        if len(selected_nature) >= 3: break
-        if x["title"].lower() not in {y["title"].lower() for y in selected_nature}:
-            selected_nature.append(x)
+    # Scientific papers may be up to one year old; prefer a rotating selection over newest-only.
+    nature = scientific_papers_from_last_year([x for x in collect("nature") if is_open_access(x)])
+    chemistry = scientific_papers_from_last_year([x for x in collect("chemistry") if is_open_access(x)])
+    building = scientific_papers_from_last_year([x for x in collect("building") if is_open_access(x)])
+    selected_chemistry = rotating_selection(chemistry, 1, seed_offset=3)
+    selected_nature = list(selected_chemistry)
+    remaining_nature = [x for x in nature + chemistry if x["title"].lower() not in {y["title"].lower() for y in selected_nature}]
+    selected_nature.extend(rotating_selection(remaining_nature, 3 - len(selected_nature), seed_offset=11))
     ranked = []
     for x in building:
         score = sum(term in (x["title"] + " " + x["summary"]).lower() for term in THERMAL_TERMS)
         ranked.append((score, x))
-    ranked.sort(key=lambda z: (z[0], z[1].get("date", "")), reverse=True)
-    selected_building = [x for score, x in ranked if score > 0][:3]
-    for _, x in ranked:
-        if len(selected_building) >= 3: break
-        if x not in selected_building: selected_building.append(x)
-    print(f"Open-access selection: Nature/Chemistry={len(selected_nature)}, Building and Environment={len(selected_building)}")
+    relevant = [x for score, x in sorted(ranked, key=lambda z: z[0], reverse=True) if score > 0]
+    pool = relevant if len(relevant) >= 3 else [x for _, x in sorted(ranked, key=lambda z: z[0], reverse=True)]
+    selected_building = rotating_selection(pool, 3, seed_offset=23)
+    print(f"Open-access papers published in last 365 days: Nature/Chemistry={len(selected_nature)}, Building and Environment={len(selected_building)}")
     enrich_abstracts(selected_nature + selected_building)
     return world[:3], selected_nature[:3], selected_building[:3]
 
