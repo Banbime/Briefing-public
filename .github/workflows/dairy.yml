@@ -37,8 +37,6 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Generate briefing
-        env:
-          INFOCLIMAT_FORECAST_URL: ${{ vars.INFOCLIMAT_FORECAST_URL }}
         run: python main.py
 
       - name: Configure Pages
