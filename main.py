@@ -117,7 +117,7 @@ def _building_and_environment_image(soup, page_url):
                         return url
                 # Some publisher markup uses a background image instead of <img>.
                 style = container.get("style", "")
-                match = re.search(r"background-image\\s*:\\s*url\\(['\\\"]?(.*?)['\\\"]?\\)", style, re.I)
+                match = re.search(r"background-image\s*:\s*url\(['\"]?(.*?)['\"]?\)", style, re.I)
                 if match:
                     url = _article_image_url({"src": match.group(1)}, page_url)
                     if url:
