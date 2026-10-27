@@ -360,7 +360,8 @@ def item_html(x):
               "page_metadata":"Résumé récupéré dans les métadonnées de l’éditeur",
               "structured_metadata":"Résumé récupéré dans les métadonnées structurées",
               "rss_fallback":"Résumé RSS utilisé (abstract complet non trouvé)",
-              "unavailable":"Abstract inaccessible",\n              "crossref":"Résumé récupéré via Crossref"}
+              "unavailable":"Abstract inaccessible",
+              "crossref":"Résumé récupéré via Crossref"}
     return f"""<article><h3>{html.escape(x['title'])}</h3>
 <p><small>{html.escape(x['source'])} · {html.escape(x.get('date',''))}</small></p>
 <p><strong>{html.escape(labels.get(status, 'Résumé disponible'))}</strong></p>
