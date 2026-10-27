@@ -1062,6 +1062,97 @@ def item_html(x):
 </div></article>"""
 
 
+
+def _nba_json(url):
+    try:
+        response = requests.get(url, timeout=12, headers=HEADERS)
+        response.raise_for_status()
+        return response.json()
+    except Exception as ex:
+        print(f"NBA data unavailable ({type(ex).__name__})")
+        return {}
+
+
+def _nba_team_leader(event_id, team_id):
+    data = _nba_json(f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={event_id}")
+    for team in (_nba_json(f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={event_id}").get("boxscore", {}).get("players", []) or []):
+        if str((team.get("team", {}) or {}).get("id", "")) != str(team_id):
+            continue
+        for group in team.get("statistics", []) or []:
+            labels = [str(label).upper() for label in (group.get("labels", []) or [])]
+            athletes = group.get("athletes", []) or []
+            if "PTS" not in labels:
+                continue
+            pi = labels.index("PTS")
+            ai = labels.index("AST") if "AST" in labels else None
+            ri = labels.index("REB") if "REB" in labels else None
+            candidates = []
+            for entry in athletes:
+                athlete, stats = entry.get("athlete", {}) or {}, entry.get("stats", []) or []
+                if len(stats) <= pi or not athlete.get("displayName"):
+                    continue
+                try:
+                    points = int(float(stats[pi]))
+                    assists = int(float(stats[ai])) if ai is not None and len(stats) > ai else 0
+                    rebounds = int(float(stats[ri])) if ri is not None and len(stats) > ri else 0
+                except (TypeError, ValueError):
+                    continue
+                candidates.append((points, athlete["displayName"], assists, rebounds))
+            if candidates:
+                points, name, assists, rebounds = max(candidates, key=lambda row: row[0])
+                return {"name": name, "points": points, "assists": assists, "rebounds": rebounds}
+    return None
+
+
+def fetch_nba_night_scores():
+    now = datetime.datetime.now(TZ)
+    dates = [(now.date() - datetime.timedelta(days=1)).strftime("%Y%m%d"),
+             now.date().strftime("%Y%m%d")]
+    events = {}
+    for date in dates:
+        data = _nba_json(f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date}&limit=20")
+        for event in data.get("events", []) or []:
+            status = event.get("status", {}).get("type", {})
+            if status.get("completed") is True:
+                events[event.get("id", "")] = event
+    games = []
+    for event in events.values():
+        competitions = event.get("competitions", []) or []
+        if not competitions:
+            continue
+        competitors = competitions[0].get("competitors", []) or []
+        if len(competitors) < 2:
+            continue
+        game = {"id": event.get("id"), "date": event.get("date", ""), "teams": []}
+        for team in sorted(competitors, key=lambda item: 0 if item.get("homeAway") == "away" else 1):
+            info = team.get("team", {}) or {}
+            game["teams"].append({"id": info.get("id", ""), "name": info.get("displayName", "Équipe"),
+                                  "abbr": info.get("abbreviation", ""), "logo": info.get("logo", ""),
+                                  "score": team.get("score", "—"), "winner": team.get("winner", False)})
+        for team in game["teams"]:
+            team["leader"] = _nba_team_leader(game["id"], team["id"])
+        games.append(game)
+    games.sort(key=lambda game: game.get("date", ""), reverse=True)
+    return games
+
+
+def nba_scores_html(games):
+    cards = []
+    for game in games:
+        rows = []
+        for team in game["teams"]:
+            logo = ('<img class="nba-logo" src="' + html.escape(team["logo"], quote=True) + '" alt="" loading="lazy">'
+                    if team.get("logo") else '<span class="nba-logo-fallback">🏀</span>')
+            leader = team.get("leader")
+            stats = (f'<p class="nba-leader"><strong>{html.escape(leader["name"])}</strong> · {leader["points"]} pts / {leader["assists"]} pd / {leader["rebounds"]} reb</p>'
+                     if leader else '<p class="nba-leader nba-muted">Statistiques individuelles indisponibles</p>')
+            rows.append(f'<div class="nba-team {"nba-winner" if team.get("winner") else ""}"><div class="nba-team-line">{logo}<span class="nba-team-name">{html.escape(team["abbr"] or team["name"])}</span><strong class="nba-score">{html.escape(str(team["score"]))}</strong></div>{stats}</div>')
+        cards.append('<article class="nba-game">' + "".join(rows) + '</article>')
+    if not cards:
+        cards.append('<p class="nba-empty">Aucun match terminé trouvé pour la nuit écoulée.</p>')
+    return '<aside class="nba-sidebar"><div class="nba-panel"><p class="nba-eyebrow">NBA · cette nuit</p><h2>Scores NBA</h2>' + "".join(cards) + '<p class="nba-source">Logos et résultats : ESPN · actualisés à la génération du briefing.</p></div></aside>'
+
+
 def main():
     weather_text = weather()
     world, nature, building = select_items()
