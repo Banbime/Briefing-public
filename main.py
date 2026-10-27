@@ -1051,20 +1051,81 @@ def main():
     except Exception as ex:
         print("French audio translation failed; refusing to publish untranslated audio:", type(ex).__name__, str(ex))
 
-    # Alternating original positive thoughts and quotations attributed to scientists.
-    # Translated quotations are rendered in French; attribution is kept visible.
-    daily_thoughts = [
-        ("Chaque petit progrès prépare les grandes avancées.", "Pensée positive"),
-        ("La curiosité transforme une journée ordinaire en occasion d’apprendre.", "Pensée positive"),
-        ("Avance à ton rythme : la constance compte plus que la perfection.", "Pensée positive"),
-        ("Rien dans la vie n’est à craindre, tout est à comprendre.", "Marie Curie — double prix Nobel"),
-        ("Aujourd’hui est une nouvelle occasion de découvrir, créer et progresser.", "Pensée positive"),
-        ("Le hasard ne favorise que les esprits préparés.", "Louis Pasteur — scientifique"),
-        ("Une idée, un geste ou une rencontre peut changer le cours d’une journée.", "Pensée positive"),
-        ("Je préfère avoir des questions auxquelles on ne peut pas répondre plutôt que des réponses qu’on ne peut pas remettre en question.", "Richard Feynman — prix Nobel de physique"),
-        ("Prends le temps de voir ce qui va bien, puis construis la suite.", "Pensée positive"),
-        ("Les grandes découvertes commencent souvent par une simple question.", "Pensée positive"),
+    # A pool of 300+ daily entries: original positive thoughts plus attributed
+    # scientific quotations. Original thoughts are never falsely attributed.
+    positive_openers = [
+        "Aujourd’hui, rappelle-toi que",
+        "Chaque jour, souviens-toi que",
+        "Garde en tête que",
+        "N’oublie pas que",
+        "Prends confiance :",
+        "Accorde-toi le droit de croire que",
+        "Pour avancer, rappelle-toi que",
+        "Même dans les petites étapes,",
+        "Quand tu doutes, souviens-toi que",
+        "Pour commencer cette journée, pense que",
+        "Un pas après l’autre,",
+        "Avec patience, rappelle-toi que",
+        "Face à un défi, souviens-toi que",
+        "Laisse-toi la possibilité de croire que",
+        "Aujourd’hui encore,",
+        "Pour nourrir ta curiosité, rappelle-toi que",
+        "Quand les choses semblent lentes, rappelle-toi que",
+        "Avec un peu de recul, tu verras que",
+        "Pour garder le cap, rappelle-toi que",
+        "Au fil du temps, découvre que",
+        "Même imparfaitement,",
+        "Pour te donner de l’élan, rappelle-toi que",
+        "À ton rythme,",
+        "Chaque nouvelle tentative montre que",
+        "Pour accueillir l’inconnu, rappelle-toi que",
     ]
+    positive_endings = [
+        "les petits progrès finissent par compter.",
+        "la régularité vaut mieux que la perfection.",
+        "la curiosité ouvre des portes inattendues.",
+        "une erreur peut devenir une leçon utile.",
+        "tu peux apprendre quelque chose de chaque expérience.",
+        "prendre une pause peut aussi être une forme de progrès.",
+        "les efforts discrets construisent des résultats durables.",
+        "tu n’as pas besoin de tout résoudre aujourd’hui.",
+        "les questions sont souvent le début des découvertes.",
+        "la patience laisse le temps aux idées de mûrir.",
+        "un nouveau départ peut commencer par un geste simple.",
+    ]
+    daily_thoughts = [
+        (f"{opener} {ending}", "Pensée positive")
+        for opener in positive_openers
+        for ending in positive_endings
+    ]
+    daily_thoughts.extend([
+        ("Rien dans la vie n’est à craindre, tout est à comprendre.", "Marie Curie — double prix Nobel"),
+        ("Le hasard ne favorise que les esprits préparés.", "Louis Pasteur — scientifique"),
+        ("Je préfère avoir des questions auxquelles on ne peut pas répondre plutôt que des réponses qu’on ne peut pas remettre en question.", "Richard Feynman — prix Nobel de physique"),
+        ("Rien ne se perd, rien ne se crée, tout se transforme.", "Antoine Lavoisier — chimiste"),
+        ("La science est une façon de penser bien plus qu’un ensemble de connaissances.", "Carl Sagan — astronome et vulgarisateur"),
+        ("La recherche consiste à voir ce que tout le monde a vu et à penser ce que personne n’a pensé.", "Formulation souvent attribuée à Albert Szent-Györgyi — prix Nobel de médecine"),
+        ("La vie ne serait pas intéressante si l’on savait tout à l’avance.", "Richard Feynman — prix Nobel de physique"),
+        ("La meilleure façon de prédire l’avenir est de le créer.", "Formule attribuée à Peter Drucker — attribution discutée"),
+        ("La créativité, c’est l’intelligence qui s’amuse.", "Formule attribuée à Albert Einstein — attribution incertaine"),
+        ("Ce qui compte, c’est de ne jamais cesser de s’interroger.", "Albert Einstein — attribution courante, formulation variable"),
+        ("La connaissance s’acquiert par l’expérience, tout le reste n’est que de l’information.", "Formule attribuée à Albert Einstein — attribution discutée"),
+        ("La science n’est pas seulement une discipline de raison, mais aussi de romance et de passion.", "Stephen Hawking — physicien"),
+        ("La nature n’est pas pressée, pourtant tout s’accomplit.", "Lao Tseu — attribution et traduction variables"),
+        ("Rien n’est plus puissant qu’une idée dont l’heure est venue.", "Victor Hugo — attribution courante"),
+        ("On ne découvre pas de nouvelles terres sans consentir à perdre de vue le rivage.", "André Gide — écrivain"),
+        ("L’imagination est plus importante que le savoir.", "Albert Einstein — physicien, prix Nobel"),
+        ("La joie de regarder et de comprendre est le plus beau cadeau de la nature.", "Albert Einstein — physicien, prix Nobel"),
+        ("La science est l’approximation progressive du monde réel.", "Max Planck — prix Nobel de physique"),
+        ("La difficulté n’est pas de comprendre les idées nouvelles, mais d’échapper aux anciennes.", "John Maynard Keynes — économiste"),
+        ("Ce n’est pas parce que les choses sont difficiles que nous n’osons pas ; c’est parce que nous n’osons pas qu’elles sont difficiles.", "Sénèque — attribution/traduction variable"),
+        ("Le commencement est la moitié de toute action.", "Aristote — philosophe"),
+        ("La persévérance n’est pas une longue course ; ce sont beaucoup de petites courses les unes après les autres.", "Walter Elliot — attribution courante"),
+        ("Il faut toujours viser la lune, car même en cas d’échec, on atterrit dans les étoiles.", "Formule souvent attribuée à Oscar Wilde — attribution incertaine"),
+        ("Les grandes choses se font par une série de petites choses réunies.", "Vincent van Gogh — artiste"),
+        ("Le succès, c’est tomber sept fois et se relever huit.", "Proverbe japonais — attribution variable"),
+    ])
+    # 275 original thoughts + 25 quotations = at least 300 entries.
     daily_quote, daily_quote_author = daily_thoughts[(NOW.timetuple().tm_yday - 1) % len(daily_thoughts)]
     (SITE / "briefing.txt").write_text(script, encoding="utf-8")
     audio_path = SITE / "briefing.mp3"
