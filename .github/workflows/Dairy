@@ -1,0 +1,52 @@
+name: Build daily briefing
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * *"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check or install FFmpeg
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          else
+            ffmpeg -version | head -n 1
+          fi
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Generate briefing
+        run: python main.py
+        env:
+          INFOCLIMAT_API_KEY: ${{ secrets.INFOCLIMAT_API_KEY }}
+          INFOCLIMAT_OBSERVATIONS_URL: ${{ vars.INFOCLIMAT_OBSERVATIONS_URL }}
+          INFOCLIMAT_FORECAST_URL: ${{ vars.INFOCLIMAT_FORECAST_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
