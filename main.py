@@ -70,54 +70,128 @@ def collect(group):
     return unique(items)
 
 def weather():
-    # Coordinates approximatives d'Ambérieu-en-Bugey
-    url = "https://api.open-meteo.com/v1/forecast"
-    params = {
-        "latitude": 45.96, "longitude": 5.35,
-        "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
-        "hourly": "temperature_2m,precipitation_probability",
-        "timezone": "Europe/Paris", "forecast_days": 1
-    }
-    try:
-        r = requests.get(url, params=params, timeout=15); r.raise_for_status()
-        d = r.json()["daily"]
-        return (f"Ambérieu-en-Bugey : minimum {d['temperature_2m_min'][0]} °C, "
-                f"maximum {d['temperature_2m_max'][0]} °C, probabilité maximale de précipitations "
-                f"{d['precipitation_probability_max'][0]} %. Source : Open-Meteo.")
-    except Exception as ex:
-        return f"Météo indisponible pour le moment ({ex})."
+    """Retourne d'abord les observations Infoclimat, puis les prévisions du jour.
+
+    Observations : API OpenData Infoclimat (clé facultative stockée dans
+    le secret GitHub INFOCLIMAT_API_KEY). Prévisions : API publique Infoclimat
+    via une URL de prévision configurée dans INFOCLIMAT_FORECAST_URL.
+    Si une source n'est pas configurée ou disponible, le briefing le signale
+    explicitement et ne fabrique pas de valeurs.
+    """
+    parts = []
+    station_url = os.getenv("INFOCLIMAT_OBSERVATIONS_URL", "").strip()
+    api_key = os.getenv("INFOCLIMAT_API_KEY", "").strip()
+    if station_url and api_key:
+        try:
+            r = requests.get(station_url, params={"token": api_key}, timeout=15,
+                             headers={"User-Agent": "BriefingMatinal/1.0"})
+            r.raise_for_status()
+            data = r.json()
+            # Les formats OpenData peuvent varier selon le type de requête.
+            def find_values(obj):
+                found = {}
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        lk = str(k).lower()
+                        if any(t in lk for t in ("temperature", "humidite", "humidité", "vent", "pression", "pluie")) and isinstance(v, (str, int, float)):
+                            found[k] = v
+                        elif isinstance(v, (dict, list)):
+                            found.update(find_values(v))
+                elif isinstance(obj, list):
+                    for v in obj[:20]: found.update(find_values(v))
+                return found
+            values = find_values(data)
+            if values:
+                formatted = "; ".join(f"{k}: {v}" for k, v in list(values.items())[:8])
+                parts.append("Observations locales Infoclimat : " + formatted + ".")
+            else:
+                parts.append("Observations locales Infoclimat : données reçues, mais format non reconnu.")
+        except Exception as ex:
+            print("Infoclimat observations error:", ex)
+            parts.append("Observations locales Infoclimat indisponibles ce matin.")
+    else:
+        parts.append("Observations locales Infoclimat : non configurées. Ajoutez la clé API et l’URL de requête dans les secrets/variables GitHub.")
+
+    forecast_url = os.getenv("INFOCLIMAT_FORECAST_URL", "").strip()
+    if forecast_url:
+        try:
+            r = requests.get(forecast_url, timeout=15,
+                             headers={"User-Agent": "BriefingMatinal/1.0"})
+            r.raise_for_status()
+            payload = r.json()
+            # L'API GFS d'Infoclimat renvoie une liste de créneaux horodatés.
+            if isinstance(payload, dict) and payload.get("request_state") not in (None, "ok", 200, "200"):
+                raise ValueError(f"request_state={payload.get('request_state')}")
+            if isinstance(payload, dict):
+                slots = [(k, v) for k, v in payload.items() if isinstance(v, dict)]
+                if slots:
+                    first = slots[0][1]
+                    bits = []
+                    for key, label in (("temperature", "température"), ("humidite", "humidité"), ("pression", "pression"), ("pluie", "pluie"), ("vent_moyen", "vent")):
+                        if first.get(key) is not None: bits.append(f"{label} {first[key]}")
+                    if bits: parts.append("Prévisions Infoclimat pour aujourd’hui : " + ", ".join(bits) + ".")
+                    else: parts.append("Prévisions Infoclimat reçues, mais valeurs non reconnues.")
+                else:
+                    parts.append("Prévisions Infoclimat reçues, mais format non reconnu.")
+            else:
+                parts.append("Prévisions Infoclimat reçues, mais format non reconnu.")
+        except Exception as ex:
+            print("Infoclimat forecast error:", ex)
+            parts.append("Prévisions Infoclimat indisponibles ce matin.")
+    else:
+        parts.append("Prévisions du jour : non configurées. Ajoutez l’URL JSON de prévisions Infoclimat dans la variable GitHub INFOCLIMAT_FORECAST_URL.")
+    return "Ambérieu-en-Bugey. " + " ".join(parts) + " Source météo : Infoclimat."
 
 def select_items():
-    world = collect("world")
+    # Mélanger les sources et privilégier la diversité des médias pour les actualités générales.
+    world_all = collect("world")
+    world = []
+    for x in world_all:
+        if x["source"] not in {y["source"] for y in world}:
+            world.append(x)
+        if len(world) == 3:
+            break
+    # Si une source ne fournit pas assez d'articles, compléter sans doublons.
+    for x in world_all:
+        if len(world) >= 3:
+            break
+        if x not in world:
+            world.append(x)
+
     nature = collect("nature")
     chemistry = collect("chemistry")
     building = collect("building")
 
-    # Priorité à Nature Chemistry pour garantir une place à la chimie.
+    # Priorité à Nature Chemistry pour réserver au moins une place à cette revue.
     selected_nature = []
     if chemistry:
         selected_nature.append(chemistry[0])
     for x in nature:
-        if len(selected_nature) >= 3: break
+        if len(selected_nature) >= 3:
+            break
         if x["title"].lower() not in {y["title"].lower() for y in selected_nature}:
             selected_nature.append(x)
-    # Si le flux Nature général est vide, compléter avec des articles de chimie.
     for x in chemistry[1:]:
-        if len(selected_nature) >= 3: break
-        selected_nature.append(x)
+        if len(selected_nature) >= 3:
+            break
+        if x["title"].lower() not in {y["title"].lower() for y in selected_nature}:
+            selected_nature.append(x)
 
-    # Filtre thématique Building and Environment ; si peu de résultats, conserver les derniers articles
-    # en signalant que le filtre est indicatif.
+    # Prioriser les articles de Building and Environment dont le titre ou le résumé
+    # mentionne la QAI, la ventilation ou le confort thermique.
     ranked = []
     for x in building:
-        text = (x["title"] + " " + x["summary"]).lower()
-        score = sum(term in text for term in THERMAL_TERMS)
+        haystack = (x["title"] + " " + x["summary"]).lower()
+        score = sum(term in haystack for term in THERMAL_TERMS)
         ranked.append((score, x))
-    ranked.sort(key=lambda z: (z[0], z[1].get("date","")), reverse=True)
+    ranked.sort(key=lambda z: (z[0], z[1].get("date", "")), reverse=True)
     selected_building = [x for score, x in ranked if score > 0][:3]
+    # Compléter si nécessaire, sans prétendre que les articles restants sont forcément ciblés.
     if len(selected_building) < 3:
-        for x in building:
-            if x not in selected_building and len(selected_building) < 3:
+        for _, x in ranked:
+            if len(selected_building) >= 3:
+                break
+            if x not in selected_building:
                 selected_building.append(x)
     return world[:3], selected_nature[:3], selected_building[:3]
 
@@ -134,7 +208,7 @@ def gemini_rewrite(items, weather_text):
             blocks.append(f"{i}. Titre: {x['title']}\nSource: {x['source']}\nDate: {x['date']}\nLien: {x['link']}\nRésumé RSS: {x['summary']}\n")
     prompt = f"""Rédige un briefing matinal en français, clair et naturel à écouter, daté du {NOW:%d/%m/%Y}.
 Météo: {weather_text}
-Règles: utilise uniquement les informations présentes ci-dessous; ne complète pas les détails absents; signale si le résumé source est insuffisant; n'invente aucun résultat; conserve chaque titre, source et URL. Pour les articles scientifiques, distingue résultats, interprétation et limites. Pour Building and Environment, insiste sur qualité de l'air intérieur et confort thermique si le contenu le permet. Ne présente pas les flux RSS comme des textes intégraux.
+Règles: utilise uniquement les informations présentes ci-dessous; ne complète pas les détails absents; signale si le résumé source est insuffisant; n'invente aucun résultat; conserve chaque titre, source et URL. Pour les articles scientifiques, distingue résultats, interprétation et limites. Pour les articles scientifiques, traduis en français le résumé (abstract) fourni lorsqu’il est disponible, sans inventer d’informations. Ne cite pas les noms des auteurs secondaires : cite uniquement le titre et la revue si nécessaire. Pour Building and Environment, insiste sur qualité de l'air intérieur et confort thermique si le contenu le permet. Ne présente pas les flux RSS comme des textes intégraux. À l’oral, ne termine pas chaque sujet par une formule invitant à consulter la source ; les liens restent sur la page web.
 Structure: météo; 3 actualités mondiales; 3 articles de Nature dont un Nature Chemistry; 3 articles Building and Environment; conclusion très courte.
 Fais environ 900 à 1300 mots au maximum et ajoute des liens Markdown sous chaque sujet.
 Données:
@@ -155,7 +229,7 @@ def fallback_script(weather_text, world, nature, building):
                            ("Building and Environment : qualité de l'air et confort thermique", building)]:
         lines.append(label + ".")
         for i, x in enumerate(entries, 1):
-            lines.append(f"Sujet {i}. {x['title']}. Source : {x['source']}. {x['summary'] or 'Aucun résumé fourni dans le flux RSS.'} Pour en savoir plus, consultez le lien associé dans la version texte.")
+            lines.append(f"Sujet {i}. {x['title']}. Source : {x['source']}. {x['summary'] or 'Aucun résumé fourni dans le flux RSS.'}")
     lines.append("Fin du briefing. Bonne journée.")
     return "\n\n".join(lines)
 
@@ -205,7 +279,7 @@ def main():
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Briefing matinal</title>
 <style>body{{font-family:system-ui,sans-serif;max-width:850px;margin:2rem auto;padding:0 1rem;line-height:1.55}}article{{border-bottom:1px solid #ddd;padding:0.7rem 0}}audio{{width:100%}}small{{color:#555}}.weather{{padding:1rem;background:#eef5ff;border-radius:12px}}</style></head><body>
 <h1>Briefing matinal — {NOW:%d/%m/%Y}</h1><p>Généré automatiquement. Les résumés s'appuient sur les métadonnées et descriptions disponibles dans les flux RSS ; consultez les sources originales.</p>
-<div class="weather"><h2>Météo</h2><p>{html.escape(weather_text)}</p><small>Données météo : Open-Meteo, licence CC BY 4.0.</small></div>
+<div class="weather"><h2>Météo</h2><p>{html.escape(weather_text)}</p><small>Données météo : Infoclimat. Consultez le site Infoclimat pour les détails et les observations de station.</small></div>
 <h2>Écouter le briefing</h2>
 {"<audio controls src='briefing.mp3'></audio>" if audio_path.exists() else "<p>Audio indisponible pour cette exécution ; consultez le texte ci-dessous.</p>"}
 <p><a href="briefing.txt">Lire ou télécharger le texte complet</a></p>
