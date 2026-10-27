@@ -245,7 +245,7 @@ def ssrn_abstract(item):
     try:
         # A DOI can sometimes directly identify the SSRN record.
         doi = extract_doi(item)
-        match = re.search(r"(?:10\\.2139/ssrn\\.|ssrn\\.)(\\d+)", doi, flags=re.I)
+        match = re.search(r"(?:10\.2139/ssrn\.|ssrn\.)(\d+)", doi, flags=re.I)
         if match:
             url = f"https://papers.ssrn.com/sol3/papers.cfm?abstract_id={match.group(1)}"
             if url not in candidates:
@@ -291,14 +291,14 @@ def ssrn_abstract(item):
                     node = heading.find_next(["p", "div"])
                     if node:
                         value = clean(node.get_text(" ", strip=True))
-                        value = re.sub(r"^abstract\\s*", "", value, flags=re.I).strip()
+                        value = re.sub(r"^abstract\s*", "", value, flags=re.I).strip()
                         if len(value) >= 120:
                             return value[:9000]
             for selector in ["#abstract-text", ".abstract-text", ".abstract", "[data-testid='abstract']"]:
                 node = soup.select_one(selector)
                 if node:
                     value = clean(node.get_text(" ", strip=True))
-                    value = re.sub(r"^abstract\\s*", "", value, flags=re.I).strip()
+                    value = re.sub(r"^abstract\s*", "", value, flags=re.I).strip()
                     if len(value) >= 120:
                         return value[:9000]
 
