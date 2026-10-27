@@ -889,11 +889,73 @@ def get_argos_translator():
         raise RuntimeError("Traduction française Argos indisponible") from ex
 
 
+def detect_text_language(text, default="en"):
+    """Lightweight French/English detection to avoid translating already-French RSS text."""
+    value = " " + clean(text).lower() + " "
+    if not value.strip():
+        return default
+    french_markers = [
+        " le ", " la ", " les ", " des ", " une ", " dans ", " pour ", " avec ",
+        " est ", " sont ", " cette ", " ces ", " sur ", " aux ", " leur ", " leurs ",
+        " et ", " mais ", " alors ", " étude ", " résultats ", " montre ", " selon ",
+        " chercheurs ", " recherche ", " données ", " bâtiment ", " qualité ",
+    ]
+    english_markers = [
+        " the ", " and ", " of ", " to ", " in ", " for ", " with ", " are ",
+        " was ", " were ", " this ", " these ", " that ", " from ", " study ",
+        " results ", " shows ", " researchers ", " findings ", " indoor ", " building ",
+        " air quality ", " thermal comfort ",
+    ]
+    fr_score = sum(value.count(marker) for marker in french_markers)
+    en_score = sum(value.count(marker) for marker in english_markers)
+    if re.search(r"[àâçéèêëîïôùûüÿœ]", value):
+        fr_score += 2
+    if fr_score > en_score:
+        return "fr"
+    if en_score > fr_score:
+        return "en"
+    return default
+
+
+def _translate_with_gemini(text):
+    """Use the configured Gemini model for fluent translation; return None on failure."""
+    key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not key:
+        return None
+    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    prompt = (
+        "Traduis en français naturel et fidèle le texte anglais ci-dessous pour un briefing audio scientifique. "
+        "Conserve exactement les chiffres, unités, acronymes utiles, noms propres et nuances scientifiques. "
+        "N'ajoute aucune information, aucun commentaire, aucune introduction et ne résume pas. "
+        "Rends uniquement la traduction française.\n\nTEXTE :\n" + text
+    )
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+        response = requests.post(
+            url,
+            json={"contents": [{"parts": [{"text": prompt}]}],
+                  "generationConfig": {"temperature": 0.1}},
+            timeout=60,
+        )
+        response.raise_for_status()
+        translated = response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return translated if translated else None
+    except Exception as ex:
+        print("Gemini audio translation failed; trying Argos:", type(ex).__name__)
+        return None
+
+
 def translate_for_audio(text, translator, source_is_english=True):
-    """Translate audio text locally when the source is English; keep French text intact."""
+    """Translate English only; prefer Gemini for fluency and use Argos as offline fallback."""
     value = clean(text)
-    if not value or not source_is_english:
+    if not value:
         return value
+    language = detect_text_language(value, default="en" if source_is_english else "fr")
+    if language == "fr":
+        return value
+    translated = _translate_with_gemini(value)
+    if translated:
+        return translated
     try:
         return translator.translate(value)
     except Exception as ex:
@@ -901,23 +963,24 @@ def translate_for_audio(text, translator, source_is_english=True):
 
 
 def build_audio_script(weather_text, world, nature, building):
-    """Create a French-only audio script independently of the website's written briefing."""
+    """Build French audio, detecting language independently for every title and summary."""
     translator = get_argos_translator()
     lines = [f"Bonjour. Voici votre briefing du {NOW:%d/%m/%Y}.", weather_text]
     sections = [
-        ("Les actualités mondiales", world, lambda x: x.get("source", "") not in {"Le Monde — À la une"}),
-        ("Les publications scientifiques de Nature, dont Nature Chemistry", nature, lambda x: True),
-        ("Les publications de Building and Environment sur la qualité de l'air et le confort thermique", building, lambda x: True),
+        ("Les actualités mondiales", world, "en"),
+        ("Les publications scientifiques de Nature, dont Nature Chemistry", nature, "en"),
+        ("Les publications de Building and Environment sur la qualité de l'air et le confort thermique", building, "en"),
     ]
-    for label, entries, is_english in sections:
+    for label, entries, default_language in sections:
         lines.append(label + ".")
         for index, item in enumerate(entries, 1):
-            english = is_english(item)
-            title = translate_for_audio(item.get("title", ""), translator, english)
+            # The source is a useful fallback, but title and abstract are detected separately.
+            source_default = "fr" if item.get("source", "").startswith("Le Monde") else default_language
+            title = translate_for_audio(item.get("title", ""), translator, source_default == "en")
             lines.append(f"Article {index} : {title}.")
             summary = item.get("abstract") or item.get("summary") or ""
             if summary:
-                translated = translate_for_audio(summary, translator, english)
+                translated = translate_for_audio(summary, translator, source_default == "en")
                 lines.append(translated)
             else:
                 lines.append("Le résumé détaillé n'est pas disponible.")
