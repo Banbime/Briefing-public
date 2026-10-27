@@ -224,6 +224,62 @@ def openalex_abstract(item, page=""):
         print("OpenAlex abstract lookup failed:", type(ex).__name__)
         return ""
 
+
+def ssrn_abstract(item):
+    """Search SSRN by exact title and return its abstract only when the title matches."""
+    title = clean(item.get("title", ""))
+    if not title:
+        return ""
+    normalize = lambda value: re.sub(r"[^a-z0-9]+", " ", clean(value).lower()).strip()
+    target = normalize(title)
+    try:
+        search_url = "https://papers.ssrn.com/sol3/results.cfm"
+        response = requests.get(search_url, params={"txtKey_Words": title}, timeout=15, headers=HEADERS)
+        if response.status_code != 200:
+            return ""
+        search_soup = BeautifulSoup(response.text, "html.parser")
+        candidates = []
+        for link in search_soup.find_all("a", href=True):
+            href = link["href"]
+            if "papers.cfm?abstract_id=" in href:
+                absolute = requests.compat.urljoin(response.url, href)
+                if absolute not in candidates:
+                    candidates.append(absolute)
+        # Keep the lookup bounded; only accept an exact normalized title match.
+        for url in candidates[:5]:
+            page_response = requests.get(url, timeout=15, headers=HEADERS)
+            if page_response.status_code != 200:
+                continue
+            soup = BeautifulSoup(page_response.text, "html.parser")
+            headings = [normalize(h.get_text(" ", strip=True)) for h in soup.find_all(["h1", "h2"])]
+            if target not in headings:
+                continue
+            for meta in soup.find_all("meta"):
+                key = (meta.get("name") or meta.get("property") or "").strip().lower()
+                value = clean(meta.get("content", ""))
+                if key in {"citation_abstract", "dc.description"} and len(value) >= 120:
+                    return value[:9000]
+            # SSRN commonly places the abstract in the section immediately following its heading.
+            for heading in soup.find_all(["h2", "h3"]):
+                if normalize(heading.get_text(" ", strip=True)) == "abstract":
+                    node = heading.find_next(["p", "div"])
+                    if node:
+                        value = clean(node.get_text(" ", strip=True))
+                        value = re.sub(r"^abstract\s*", "", value, flags=re.I).strip()
+                        if len(value) >= 120:
+                            return value[:9000]
+            for selector in ["#abstract-text", ".abstract-text", ".abstract"]:
+                node = soup.select_one(selector)
+                if node:
+                    value = clean(node.get_text(" ", strip=True))
+                    value = re.sub(r"^abstract\s*", "", value, flags=re.I).strip()
+                    if len(value) >= 120:
+                        return value[:9000]
+        return ""
+    except Exception as ex:
+        print("SSRN abstract lookup failed:", type(ex).__name__)
+        return ""
+
 def enrich_abstracts(items):
     # Fetch abstracts only for selected scientific papers.
     for item in items:
@@ -245,6 +301,10 @@ def enrich_abstracts(items):
                     openalex = openalex_abstract(item, page)
                     if openalex:
                         abstract, status = openalex, "openalex"
+                    else:
+                        ssrn = ssrn_abstract(item)
+                        if ssrn:
+                            abstract, status = ssrn, "ssrn"
             item["abstract"] = abstract
             item["abstract_status"] = status
             print(f"Abstract [{status}]: {item['title'][:100]}")
@@ -254,7 +314,7 @@ def enrich_abstracts(items):
             item["abstract_status"] = "rss_fallback" if item["summary"] else "unavailable"
             print(f"Abstract fetch failed [{item['title'][:80]}]: {type(ex).__name__}")
             if item["abstract_status"] == "rss_fallback":
-                for getter, status in ((crossref_abstract, "crossref"), (openalex_abstract, "openalex")):
+                for getter, status in ((crossref_abstract, "crossref"), (openalex_abstract, "openalex"), (lambda it, pg: ssrn_abstract(it), "ssrn")):
                     value = getter(item, page)
                     if value:
                         item["abstract"], item["abstract_status"] = value, status
@@ -463,7 +523,8 @@ def item_html(x):
               "rss_fallback":"Résumé RSS utilisé (abstract complet non trouvé)",
               "unavailable":"Abstract inaccessible",
               "crossref":"Résumé récupéré via Crossref",
-              "openalex":"Résumé récupéré via OpenAlex"}
+              "openalex":"Résumé récupéré via OpenAlex",
+              "ssrn":"Résumé récupéré via SSRN"}
     return f"""<article><h3>{html.escape(x['title'])}</h3>
 <p><small>{html.escape(x['source'])} · {html.escape(x.get('date',''))}</small></p>
 <p><strong>{html.escape(labels.get(status, 'Résumé disponible'))}</strong></p>
