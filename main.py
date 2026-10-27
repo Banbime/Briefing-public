@@ -203,10 +203,21 @@ def weather():
     # A — Prévisions : conserver l'URL Infoclimat configurée dans les variables GitHub.
     forecast_url = os.getenv("INFOCLIMAT_FORECAST_URL", "").strip()
     if forecast_url:
+        forecast_response = None
         try:
-            r = requests.get(forecast_url, timeout=20, headers=HEADERS)
-            r.raise_for_status()
-            data = r.json()
+            forecast_response = requests.get(forecast_url, timeout=20, headers=HEADERS)
+            forecast_response.raise_for_status()
+            try:
+                data = forecast_response.json()
+            except ValueError:
+                # Do not print the URL or raw response: it may contain credentials.
+                content_type = forecast_response.headers.get("content-type", "inconnu")
+                print("Infoclimat forecast returned non-JSON content; status:",
+                      forecast_response.status_code, "content-type:", content_type)
+                parts.append("Prévisions Infoclimat indisponibles : la réponse n'est pas au format JSON.")
+                data = None
+            if data is None:
+                raise RuntimeError("réponse Infoclimat non JSON")
 
             # Les réponses d'API météo varient selon le produit Infoclimat.
             # On recherche les valeurs connues sans supposer un seul schéma JSON.
@@ -254,9 +265,21 @@ def weather():
                 print("Infoclimat forecast JSON received; field names not recognized:", ", ".join(list(flat.keys())[:25]))
                 parts.append("Prévisions Infoclimat : réponse reçue, mais format des données non reconnu.")
         except Exception as ex:
-            # Do not print the URL: it may contain a token or authentication parameter.
-            print("Infoclimat forecast error:", type(ex).__name__, str(ex).split(" for url:")[0][:180])
-            parts.append("Prévisions Infoclimat indisponibles ce matin.")
+            # Never log the full exception URL: INFOCLIMAT_FORECAST_URL may contain credentials.
+            status = getattr(forecast_response, "status_code", None)
+            detail = type(ex).__name__
+            if status is not None:
+                detail += f" (HTTP {status})"
+            print("Infoclimat forecast error:", detail)
+            if not any("Prévisions Infoclimat indisponibles" in part for part in parts):
+                if status == 400:
+                    parts.append("Prévisions Infoclimat indisponibles : l'API a refusé la requête (HTTP 400). Vérifier l'URL, ses paramètres et l'authentification dans les variables GitHub.")
+                elif status in (401, 403):
+                    parts.append(f"Prévisions Infoclimat indisponibles : accès refusé (HTTP {status}). Vérifier l'authentification et les droits associés à l'URL.")
+                elif status is not None:
+                    parts.append(f"Prévisions Infoclimat indisponibles : l'API a répondu HTTP {status}.")
+                else:
+                    parts.append("Prévisions Infoclimat indisponibles : erreur réseau ou de lecture de la réponse.")
     else:
         parts.append("Prévisions Infoclimat non configurées : vérifier la variable INFOCLIMAT_FORECAST_URL.")
 
