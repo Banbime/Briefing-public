@@ -34,6 +34,9 @@ def load_monthly_history():
     return history
 
 
+ARTICLE_HISTORY = load_monthly_history()
+
+
 def article_history_keys(item):
     return (item.get("link", "").strip().rstrip("/").lower(),
             re.sub(r"[^a-z0-9]+", " ", clean(item.get("title", "")).lower()).strip())
