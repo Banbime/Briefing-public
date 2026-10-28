@@ -316,7 +316,7 @@ def fetch_article_image(item):
                 value = (meta.get("content") or "").strip()
                 if key in {"og:image", "og:image:url", "twitter:image", "twitter:image:src",
                            "citation_thumbnail", "citation_figure", "thumbnail"} and value.startswith(("https://", "http://")):
-                    if not re.search(r"\\.(pdf|svg)(?:[?#]|$)", value, re.I):
+                    if not re.search(r"\.(pdf|svg)(?:[?#]|$)", value, re.I):
                         item["image_url"] = value
                         item["image_source"] = "publisher_metadata"
                         return value
