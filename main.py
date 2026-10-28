@@ -314,7 +314,7 @@ def fetch_openalex_journal_works(group):
             print(f"OpenAlex journal source not found: {journal}")
             return []
         response = requests.get("https://api.openalex.org/works", params={
-            "filter": f"primary_location.source.id:{source['id']},from_publication_date:{cutoff},to_publication_date:{NOW.date().isoformat()},is_oa:true,type:article",
+            "filter": f"primary_location.source.id:{source['id']},from_publication_date:{cutoff},to_publication_date:{NOW.date().isoformat()},is_oa:true,type:article|review",
             "per-page": 100, "sort": "publication_date:desc"
         }, timeout=25, headers=HEADERS)
         response.raise_for_status()
@@ -977,18 +977,10 @@ def select_items():
     building_all = exclude_monthly_duplicates(collect("building"))
     building_recent = scientific_papers_from_last_year(building_all)
     building_oa = [x for x in building_recent if is_open_access(x)]
-    # Do not let incomplete OpenAlex metadata or a temporary API failure hide
-    # all Building and Environment papers. Prefer OA, then use recent publisher
-    # records as a fallback so the section remains populated and links still work.
-    if len(building_oa) >= 3:
-        building = building_oa
-        print(f"Building and Environment selection: {len(building_oa)} recent OA papers")
-    else:
-        building = building_recent
-        print(f"Building and Environment OA fallback: {len(building_oa)} OA / {len(building_recent)} recent papers")
-        if len(building) < 3:
-            building = building_all
-            print(f"Building and Environment date fallback: using {len(building)} RSS records")
+    # Keep the scientific section strictly open access; do not silently fall back
+    # to subscription-only records if OpenAlex or publisher metadata is incomplete.
+    building = building_oa
+    print(f"Building and Environment five-year OA pool: {len(building_oa)} papers")
     selected_chemistry = rotating_selection(chemistry, 1, seed_offset=3)
     selected_nature = list(selected_chemistry)
     remaining_nature = [x for x in nature + chemistry if x["title"].lower() not in {y["title"].lower() for y in selected_nature}]
