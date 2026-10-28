@@ -321,7 +321,7 @@ def fetch_article_image(item):
                         item["image_source"] = "publisher_metadata"
                         return value
     except Exception as ex:
-        print(f"Article image lookup failed [{item.get('title','')[:70}]: {type(ex).__name__}")
+        print(f"Article image lookup failed [{item.get('title', '')[:70]}]: {type(ex).__name__}")
     # Keep an RSS image as fallback if the publisher page blocks automated access.
     return fallback_image
 
