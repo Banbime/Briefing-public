@@ -994,9 +994,9 @@ def select_items():
     science_pool = unique(nature + chemistry + building_pool)
     print(f"Open-access five-year pool: Nature/Chemistry={len(nature + chemistry)}, Building and Environment={len(building)}; total unique={len(science_pool)}")
 
-    # Prefer a daily rotation across the full pool; try alternatives if an abstract is unavailable.
-    start = (NOW.timetuple().tm_yday - 1) % max(1, len(science_pool))
-    candidates = science_pool[start:] + science_pool[:start]
+    # The history filter has already removed previously published items; take the
+    # next eligible paper and only advance when an abstract is actually available.
+    candidates = science_pool
     chosen = None
     for candidate in candidates:
         enrich_abstracts([candidate])
