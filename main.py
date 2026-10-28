@@ -44,12 +44,12 @@ def article_history_keys(item):
 
 def exclude_monthly_duplicates(items, used=None):
     """Remove URLs or normalized titles already published during the current month."""
-    month = NOW.strftime("%Y-%m")
-    record = ARTICLE_HISTORY.get(month, {}) if isinstance(ARTICLE_HISTORY, dict) else {}
     used = used or set()
-    urls = {str(value).strip().rstrip("/").lower() for value in record.get("urls", [])}
+    records = ARTICLE_HISTORY.values() if isinstance(ARTICLE_HISTORY, dict) else []
+    urls = {str(value).strip().rstrip("/").lower()
+            for record in records for value in record.get("urls", [])}
     titles = {re.sub(r"[^a-z0-9]+", " ", clean(value).lower()).strip()
-              for value in record.get("titles", [])}
+              for record in records for value in record.get("titles", [])}
     filtered = []
     for item in items:
         url, title = article_history_keys(item)
@@ -73,7 +73,10 @@ def save_monthly_history(items):
             urls.add(url)
         if title:
             titles.add(title)
-    ARTICLE_HISTORY.clear()
+    cutoff_month = (NOW - datetime.timedelta(days=365 * 5)).strftime("%Y-%m")
+    for key in list(ARTICLE_HISTORY):
+        if key < cutoff_month:
+            ARTICLE_HISTORY.pop(key, None)
     ARTICLE_HISTORY[month] = {"urls": sorted(urls), "titles": sorted(titles)}
     (SITE / "article_history.json").write_text(
         json.dumps(ARTICLE_HISTORY, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -291,10 +294,59 @@ def unique(items):
             seen.add(key); out.append(x)
     return out
 
+def fetch_openalex_journal_works(group):
+    """Supplement publisher RSS with five years of verified OA research/review records."""
+    journal = {"nature": "Nature", "chemistry": "Nature Chemistry",
+               "building": "Building and Environment"}.get(group)
+    if not journal:
+        return []
+    cutoff = (NOW - datetime.timedelta(days=365 * 5)).date().isoformat()
+    works = []
+    try:
+        sr = requests.get("https://api.openalex.org/sources",
+                          params={"search": journal, "per-page": 10},
+                          timeout=15, headers=HEADERS)
+        sr.raise_for_status()
+        sources = sr.json().get("results", [])
+        source = next((s for s in sources
+                       if clean(s.get("display_name", "")).lower() == journal.lower()), None)
+        if not source:
+            print(f"OpenAlex journal source not found: {journal}")
+            return []
+        response = requests.get("https://api.openalex.org/works", params={
+            "filter": f"primary_location.source.id:{source['id']},from_publication_date:{cutoff},to_publication_date:{NOW.date().isoformat()},is_oa:true,type:article|review",
+            "per-page": 100, "sort": "publication_date:desc"
+        }, timeout=25, headers=HEADERS)
+        response.raise_for_status()
+        for work in response.json().get("results", []):
+            if (work.get("type") or "").lower() not in ("article", "review"):
+                continue
+            location = work.get("primary_location") or {}
+            landing = location.get("landing_page_url") or work.get("doi") or ""
+            title = clean(work.get("title", ""))
+            if not title or not landing:
+                continue
+            oa = work.get("open_access") or {}
+            works.append({
+                "source": journal, "title": title, "link": landing, "summary": "",
+                "abstract": "", "abstract_status": "not_checked",
+                "doi": (work.get("doi") or "").replace("https://doi.org/", ""),
+                "date": work.get("publication_date", ""), "category": group,
+                "image_url": "", "open_access_url": oa.get("oa_url") or "",
+                "_openalex_oa": True,
+            })
+        print(f"OpenAlex five-year OA pool [{journal}]: {len(works)} records")
+    except Exception as ex:
+        print(f"OpenAlex journal lookup failed [{journal}]: {type(ex).__name__}")
+    return unique(works)
+
+
 def collect(group):
     all_items = []
     for name, url in RSS[group]:
         all_items.extend(fetch_feed(name, url, group))
+    if group in ("nature", "chemistry", "building"):
+        all_items.extend(fetch_openalex_journal_works(group))
     return unique(all_items)
 
 def extract_abstract(page, fallback=""):
@@ -791,6 +843,8 @@ def weather_html(weather_text):
 
 def is_open_access(item):
     """Use OpenAlex metadata to retain only papers marked open access."""
+    if item.get("_openalex_oa"):
+        return True
     cache = getattr(is_open_access, "_cache", {})
     key = (item.get("doi") or item.get("link") or item.get("title", "")).lower()
     if key in cache:
@@ -843,8 +897,8 @@ def publication_datetime(value):
 
 
 def scientific_papers_from_last_year(items):
-    """Keep only papers with a verifiable publication date in the last 365 days."""
-    cutoff = NOW - datetime.timedelta(days=365)
+    """Keep research/review papers with a verifiable publication date in the last five years."""
+    cutoff = NOW - datetime.timedelta(days=365 * 5)
     eligible = []
     for item in items:
         published = publication_datetime(item.get("date", ""))
@@ -923,18 +977,10 @@ def select_items():
     building_all = exclude_monthly_duplicates(collect("building"))
     building_recent = scientific_papers_from_last_year(building_all)
     building_oa = [x for x in building_recent if is_open_access(x)]
-    # Do not let incomplete OpenAlex metadata or a temporary API failure hide
-    # all Building and Environment papers. Prefer OA, then use recent publisher
-    # records as a fallback so the section remains populated and links still work.
-    if len(building_oa) >= 3:
-        building = building_oa
-        print(f"Building and Environment selection: {len(building_oa)} recent OA papers")
-    else:
-        building = building_recent
-        print(f"Building and Environment OA fallback: {len(building_oa)} OA / {len(building_recent)} recent papers")
-        if len(building) < 3:
-            building = building_all
-            print(f"Building and Environment date fallback: using {len(building)} RSS records")
+    # Keep the scientific section strictly open access; do not silently fall back
+    # to subscription-only records if OpenAlex or publisher metadata is incomplete.
+    building = building_oa
+    print(f"Building and Environment five-year OA pool: {len(building_oa)} papers")
     selected_chemistry = rotating_selection(chemistry, 1, seed_offset=3)
     selected_nature = list(selected_chemistry)
     remaining_nature = [x for x in nature + chemistry if x["title"].lower() not in {y["title"].lower() for y in selected_nature}]
@@ -946,7 +992,7 @@ def select_items():
     relevant = [x for score, x in sorted(ranked, key=lambda z: z[0], reverse=True) if score > 0]
     pool = relevant if len(relevant) >= 3 else [x for _, x in sorted(ranked, key=lambda z: z[0], reverse=True)]
     selected_building = rotating_selection(pool, 3, seed_offset=23)
-    print(f"Open-access papers published in last 365 days: Nature/Chemistry={len(selected_nature)}, Building and Environment={len(selected_building)}")
+    print(f"Open-access papers published in last five years: Nature/Chemistry={len(selected_nature)}, Building and Environment={len(selected_building)}")
     # If an article has no full abstract, skip it and try the next eligible paper.
     def with_abstracts(candidates, count, label):
         selected = []
@@ -1472,7 +1518,7 @@ def main():
         ("Gustav Mahler","Des symphonies comme des mondes sonores","Mahler a conçu de vastes symphonies aux contrastes marqués, parfois avec voix et chœurs. Certaines mobilisent de grands effectifs orchestraux.","https://www.britannica.com/biography/Gustav-Mahler","Gustav Mahler 1907.jpg"),
         ("Chien-Shiung Wu","Une expérience qui a changé la physique","L’expérience de Wu a montré que la parité n’est pas conservée dans certaines interactions faibles, confirmant une prédiction théorique majeure sur les symétries en physique.","https://www.aps.org/archives/publications/apsnews/200801/physicshistory.cfm","Chien-Shiung Wu.jpg"),
         ("Frédéric Chopin","Une musique façonnée par la danse","Même dans ses œuvres de concert, Chopin s’est souvent inspiré de danses polonaises comme la mazurka et la polonaise, en les transformant en pièces de concert raffinées.","https://chopin.nifc.pl/en/chopin/biography","Frederic Chopin photo.jpeg"),
-        ("Albert Einstein","L’imagination et la curiosité","Einstein insistait souvent sur le rôle de l’imagination et du questionnement dans la recherche. Ses travaux ont profondément modifié notre compréhension de l’espace, du temps et de la gravitation.","https://www.nobelprize.org/prizes/physics/1921/einstein/biographical/","Albert Einstein Head.jpg")
+        ("Albert Einstein","L’imagination et la curiosité","Einstein insistait souvent sur le rôle de l’imagination et du questionnement dans la recherche. Ses travaux ont profondément modifié notre compréhension de l’espace, du temps et de la gravitation.","https://www.nobelprize.org/prizes/physics/1921/einstein/biographical/","Albert Einstein Head.jpg"),
 
         ("Lutherie du violon","Pourquoi le bois d’épicéa pour la table ?","La table d’harmonie est souvent taillée dans l’épicéa : léger et rigide, ce bois transmet efficacement les vibrations des cordes et contribue à la projection du son.","https://www.metmuseum.org/toah/hd/strd/hd_strd.htm",""),
         ("Lutherie du violon","L’érable du fond et des éclisses","Le fond et les éclisses sont fréquemment en érable. Sa rigidité et ses propriétés mécaniques, combinées à celles de la table, participent à la réponse acoustique propre de chaque instrument.","https://www.britannica.com/art/violin",""),
