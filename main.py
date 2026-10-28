@@ -1486,7 +1486,6 @@ def main():
         ("Lutherie du violon","La touche est généralement en ébène","La touche des violons est souvent réalisée en ébène, un bois dense et résistant à l’usure provoquée par les doigts et les cordes. Elle est soigneusement profilée pour faciliter le jeu.","https://www.britannica.com/art/violin",""),
         ("Lutherie des cordes frottées","La mèche de l’archet s’use","Les crins de l’archet s’usent et se cassent avec le temps ; la mèche doit donc être remplacée périodiquement par un professionnel. La quantité de colophane et l’état des crins changent aussi la sensation de jeu.","https://www.britannica.com/art/violin",""),
         ("Lutherie du violon","Un bon réglage peut transformer l’instrument","Le réglage d’un violon ne se limite pas à accorder les cordes : ajustement de l’âme, du chevalet, des cordes et du sillet peut améliorer la facilité de jeu et équilibrer la réponse de l’instrument.","https://www.britannica.com/art/violin",""),
-    ]
 
         ("Lutherie du violon","La volute est aussi une signature","La volute sculptée au sommet du manche est une marque visuelle du travail du luthier. Sa forme paraît décorative, mais elle témoigne aussi du soin apporté à la sculpture et aux proportions de l’instrument.","https://www.metmuseum.org/toah/hd/strd/hd_strd.htm",""),
         ("Lutherie du violon","Le fond peut être d’une ou deux pièces","Le fond d’un violon peut être taillé dans une seule pièce d’érable ou assemblé à partir de deux pièces symétriques. Le choix dépend notamment du bois disponible et des habitudes de fabrication.","https://www.metmuseum.org/toah/hd/strd/hd_strd.htm",""),
@@ -1506,6 +1505,7 @@ def main():
         ("Lutherie du violon","L’étui protège aussi des variations climatiques","Un étui solide protège le violon des chocs, mais il ralentit aussi les changements de température et d’humidité. Après un grand écart de température, mieux vaut laisser l’instrument s’acclimater avant de jouer.","https://www.britannica.com/art/violin",""),
         ("Lutherie du violon","Nettoyer sans abîmer le vernis","La colophane s’accumule sur les cordes et la table. Un chiffon doux et sec après le jeu aide à retirer les résidus ; les solvants et produits ménagers peuvent abîmer le vernis et sont à éviter.","https://www.britannica.com/art/violin",""),
         ("Lutherie des cordes frottées","La baguette de l’archet est cambrée","La baguette d’un archet moderne est courbée vers l’intérieur lorsqu’elle est détendue. Le luthier-archetier façonne cette cambrure, qui aide à contrôler la souplesse, la résistance et le rebond de l’archet.","https://www.britannica.com/art/violin",""),
+    ]
     fact = fun_facts[(NOW.timetuple().tm_yday - 1) % len(fun_facts)]
     fact_image = "https://commons.wikimedia.org/wiki/Special:FilePath/" + requests.utils.quote(fact[4]) + "?width=640"
     fun_fact_html = (
