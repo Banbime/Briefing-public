@@ -1583,6 +1583,7 @@ def main():
         ("Ludwig van Beethoven","Sonate pour violon n° 10 en sol majeur, op. 96 : 2e mouvement"),
         ("Felix Mendelssohn","Concerto pour violon en mi mineur, op. 64 : 2e mouvement"),
         ("Johannes Brahms","Sonate pour violon n° 1 en sol majeur, op. 78 : 2e mouvement"),
+        ("Antonio Vivaldi","Concerto pour violon en ré majeur, RV 208 « Grosso Mogul » : 1er mouvement"),
     ]
     music_piece = violin_pieces[(NOW.timetuple().tm_yday - 1) % len(violin_pieces)]
     spotify_search = "https://open.spotify.com/search/" + requests.utils.quote(" ".join(music_piece))
