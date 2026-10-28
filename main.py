@@ -15,6 +15,66 @@ POSITIVE_RSS = [
     ("Positive News", "https://www.positive.news/feed/"),
     ("Good News Network", "https://www.goodnewsnetwork.org/feed/"),
 ]
+HISTORY_URL = "https://banbime.github.io/Briefing-public/article_history.json"
+
+
+def load_monthly_history():
+    """Load the published history so daily runs avoid repeating articles within a month."""
+    current_month = NOW.strftime("%Y-%m")
+    history = {}
+    try:
+        response = requests.get(HISTORY_URL, timeout=8, headers=HEADERS)
+        if response.ok:
+            payload = response.json()
+            if isinstance(payload, dict):
+                history = payload
+    except Exception as ex:
+        print("Monthly article history unavailable:", type(ex).__name__)
+    history.setdefault(current_month, {"urls": [], "titles": []})
+    return history
+
+
+def article_history_keys(item):
+    return (item.get("link", "").strip().rstrip("/").lower(),
+            re.sub(r"[^a-z0-9]+", " ", clean(item.get("title", "")).lower()).strip())
+
+
+def exclude_monthly_duplicates(items, used=None):
+    """Remove URLs or normalized titles already published during the current month."""
+    month = NOW.strftime("%Y-%m")
+    record = ARTICLE_HISTORY.get(month, {}) if isinstance(ARTICLE_HISTORY, dict) else {}
+    used = used or set()
+    urls = {str(value).strip().rstrip("/").lower() for value in record.get("urls", [])}
+    titles = {re.sub(r"[^a-z0-9]+", " ", clean(value).lower()).strip()
+              for value in record.get("titles", [])}
+    filtered = []
+    for item in items:
+        url, title = article_history_keys(item)
+        if url in urls or title in titles or url in used or title in used:
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def save_monthly_history(items):
+    """Persist this briefing's chosen stories in the Pages artifact for tomorrow's run."""
+    month = NOW.strftime("%Y-%m")
+    record = ARTICLE_HISTORY.setdefault(month, {"urls": [], "titles": []})
+    urls = set(record.get("urls", []))
+    titles = set(record.get("titles", []))
+    for item in items:
+        if not item:
+            continue
+        url, title = article_history_keys(item)
+        if url:
+            urls.add(url)
+        if title:
+            titles.add(title)
+    ARTICLE_HISTORY.clear()
+    ARTICLE_HISTORY[month] = {"urls": sorted(urls), "titles": sorted(titles)}
+    (SITE / "article_history.json").write_text(
+        json.dumps(ARTICLE_HISTORY, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 RSS = {
     "world": [
@@ -609,8 +669,6 @@ def weather():
             if wind_hour is not None and wind_hour >= 25:
                 segment += f", vent à {wind_hour} kilomètres par heure"
             hourly_parts.append(segment)
-        if hourly_parts:
-            parts.append("Prévisions heure par heure pour les prochaines heures : " + ". ".join(hourly_parts) + ".")
         parts.append(forecast + ".")
     except Exception as ex:
         print("Open-Meteo weather error:", type(ex).__name__, str(ex)[:180])
@@ -818,9 +876,9 @@ def select_positive_article():
     items = []
     for name, url in POSITIVE_RSS:
         items.extend(fetch_feed(name, url, "positive"))
-    items = unique(items)
+    items = exclude_monthly_duplicates(unique(items))
     if not items:
-        print("Positive-news feeds unavailable; omitting the optional feel-good article.")
+        print("No unused positive-news story found for this month.")
         return None
 
     uplifting_terms = (
@@ -847,7 +905,7 @@ def select_positive_article():
 
 
 def select_items():
-    world_all = collect("world")
+    world_all = exclude_monthly_duplicates(collect("world"))
     world = []
     for x in world_all:
         if x["source"] not in {y["source"] for y in world}:
@@ -857,9 +915,9 @@ def select_items():
         if len(world) >= 3: break
         if x not in world: world.append(x)
     # Scientific papers may be up to one year old; prefer a rotating selection over newest-only.
-    nature = scientific_papers_from_last_year([x for x in collect("nature") if is_open_access(x)])
-    chemistry = scientific_papers_from_last_year([x for x in collect("chemistry") if is_open_access(x)])
-    building_all = collect("building")
+    nature = scientific_papers_from_last_year([x for x in exclude_monthly_duplicates(collect("nature")) if is_open_access(x)])
+    chemistry = scientific_papers_from_last_year([x for x in exclude_monthly_duplicates(collect("chemistry")) if is_open_access(x)])
+    building_all = exclude_monthly_duplicates(collect("building"))
     building_recent = scientific_papers_from_last_year(building_all)
     building_oa = [x for x in building_recent if is_open_access(x)]
     # Do not let incomplete OpenAlex metadata or a temporary API failure hide
@@ -886,8 +944,29 @@ def select_items():
     pool = relevant if len(relevant) >= 3 else [x for _, x in sorted(ranked, key=lambda z: z[0], reverse=True)]
     selected_building = rotating_selection(pool, 3, seed_offset=23)
     print(f"Open-access papers published in last 365 days: Nature/Chemistry={len(selected_nature)}, Building and Environment={len(selected_building)}")
-    enrich_abstracts(selected_nature + selected_building)
-    return world[:3], selected_nature[:3], selected_building[:3]
+    # If an article has no full abstract, skip it and try the next eligible paper.
+    def with_abstracts(candidates, count, label):
+        selected = []
+        seen = set()
+        for candidate in candidates:
+            key = article_history_keys(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            enrich_abstracts([candidate])
+            if candidate.get("abstract_status") not in ("unavailable", "rss_fallback", "not_checked") and candidate.get("abstract"):
+                selected.append(candidate)
+            else:
+                print(f"Skipping {label} article without a full abstract: {candidate.get('title','')[:90]}")
+            if len(selected) >= count:
+                break
+        return selected
+
+    nature_candidates = selected_nature + remaining_nature
+    building_candidates = selected_building + [x for x in pool if x not in selected_building]
+    selected_nature = with_abstracts(nature_candidates, 3, "Nature")
+    selected_building = with_abstracts(building_candidates, 3, "Building and Environment")
+    return world[:3], selected_nature, selected_building
 
 def gemini_rewrite(sections, weather_text):
     key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -1028,8 +1107,8 @@ def translate_for_audio(text, translator, source_is_english=True):
         raise RuntimeError("Échec de traduction d'un segment audio") from ex
 
 
-def build_audio_script(weather_text, world, nature, building):
-    """Build French audio, detecting language independently for every title and summary."""
+def build_audio_script(weather_text, world, nature, building, positive_article=None, nba_games=None):
+    """Build French audio without hourly forecasts; add good news and Spurs result."""
     translator = get_argos_translator()
     lines = [f"Bonjour. Voici votre briefing du {NOW:%d/%m/%Y}.", weather_text]
     sections = [
@@ -1050,6 +1129,33 @@ def build_audio_script(weather_text, world, nature, building):
                 lines.append(translated)
             else:
                 lines.append("Le résumé détaillé n'est pas disponible.")
+    spurs_games = [game for game in (nba_games or [])
+                   if any("spur" in team.get("name", "").lower() or team.get("abbr") == "SAS"
+                          for team in game.get("teams", []))]
+    if spurs_games:
+        lines.append("Résultats des Spurs de San Antonio.")
+        for game in spurs_games:
+            teams = game.get("teams", [])
+            if len(teams) < 2:
+                continue
+            lines.append(f"{teams[0]['name']} {teams[0]['score']}, {teams[1]['name']} {teams[1]['score']}.")
+            stats = _nba_wembanyama_stats(game.get("id"))
+            if stats:
+                lines.append(
+                    f"Victor Wembanyama : {stats['points']} points, {stats['rebounds']} rebonds, "
+                    f"{stats['assists']} passes décisives et {stats['blocks']} contres."
+                )
+            else:
+                lines.append("Les statistiques individuelles de Victor Wembanyama ne sont pas disponibles.")
+    if positive_article:
+        lines.append("Pour terminer, une bonne nouvelle.")
+        positive_title = translate_for_audio(positive_article.get("title", ""), translator, True)
+        lines.append(positive_title + ".")
+        positive_summary = positive_article.get("abstract") or positive_article.get("summary") or ""
+        if positive_summary:
+            lines.append(translate_for_audio(
+                positive_summary, translator, detect_text_language(positive_summary) == "en"
+            ))
     lines.append("Fin du briefing. Bonne journée.")
     return "\n\n".join(lines)
 
@@ -1112,6 +1218,30 @@ def _nba_json(url):
     except Exception as ex:
         print(f"NBA data unavailable ({type(ex).__name__})")
         return {}
+
+
+def _nba_wembanyama_stats(event_id):
+    """Read Victor Wembanyama's box-score line from ESPN's game summary."""
+    data = _nba_json(f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={event_id}")
+    for team in (data.get("boxscore", {}).get("players", []) or []):
+        for group in team.get("statistics", []) or []:
+            labels = [str(label).upper() for label in (group.get("labels", []) or [])]
+            athletes = group.get("athletes", []) or []
+            indexes = {label: labels.index(label) for label in ("PTS", "REB", "AST", "BLK") if label in labels}
+            for entry in athletes:
+                athlete = entry.get("athlete", {}) or {}
+                if "wembanyama" not in athlete.get("displayName", "").lower():
+                    continue
+                values = entry.get("stats", []) or []
+                def stat(name):
+                    index = indexes.get(name)
+                    try:
+                        return int(float(values[index])) if index is not None and index < len(values) else 0
+                    except (ValueError, TypeError):
+                        return 0
+                return {"points": stat("PTS"), "rebounds": stat("REB"),
+                        "assists": stat("AST"), "blocks": stat("BLK")}
+    return None
 
 
 def _nba_team_leader(event_id, team_id):
@@ -1198,6 +1328,7 @@ def main():
     positive_article = select_positive_article()
     weather_text = weather()
     world, nature, building = select_items()
+    nba_games = fetch_nba_night_scores()
     # Publisher-provided preview images improve the page; audio generation is unchanged.
     enrich_images(world + nature + building)
     sections = {"Actualités mondiales": world, "Nature (dont Nature Chemistry)": nature,
@@ -1205,7 +1336,7 @@ def main():
     script = gemini_rewrite(sections, weather_text) or fallback_script(weather_text, world, nature, building)
     audio_script = None
     try:
-        audio_script = build_audio_script(weather_text, world, nature, building)
+        audio_script = build_audio_script(weather_text, world, nature, building, positive_article, nba_games)
     except Exception as ex:
         print("French audio translation failed; refusing to publish untranslated audio:", type(ex).__name__, str(ex))
 
@@ -1364,7 +1495,7 @@ def main():
             print("Audio generation failed:", ex)
     else:
         audio_path.unlink(missing_ok=True)
-    nba_games = fetch_nba_night_scores()
+    save_monthly_history(world + nature + building + ([positive_article] if positive_article else []))
     page = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#102e32"><title>Briefing matinal</title>
 <style>
@@ -1390,23 +1521,23 @@ article.article-card{{display:grid;grid-template-columns:minmax(180px,30%) 1fr;g
 .article-image-link{{display:block;min-height:210px;background:#e8efed}}.article-image{{display:block;width:100%;height:100%;min-height:210px;max-height:300px;object-fit:cover}}
 .article-image-placeholder{{min-height:210px;display:grid;place-items:center;background:linear-gradient(135deg,#d8e9e3,#e8e8dd 55%,#cbdedc);color:#42635d;font-weight:800;letter-spacing:.2em;font-size:.75rem}}
 .article-content{{padding:1rem 1.25rem 1.1rem 0}}.eyebrow{{font-size:.68rem}}.abstract-status{{display:inline-block;background:#e8f4ef;color:#236457;border-radius:99px;padding:.15rem .6rem;font-size:.74rem;font-weight:700;margin:.2rem 0 .4rem}}.abstract-text{{color:#3b4a53;margin:.4rem 0 .7rem}}.source-link{{font-size:.88rem}}
-.weather{{padding:1.25rem 1.4rem;background:linear-gradient(135deg,#e7f1f0,#f3f8f6);border:1px solid #d3e5e1;border-radius:18px}}.weather h2{{margin:.1rem 0 1rem;border:0}}.weather h2:before{{display:none}}.weather-grid{{display:grid;grid-template-columns:1fr 1fr;gap:1rem}}.weather-card{{padding:1.1rem 1.2rem;background:#fff;border:1px solid #dce9e6;border-radius:14px;min-width:0}}.weather-label{{margin:0 0 .55rem;color:#53756d;font-size:.7rem;font-weight:800;letter-spacing:.1em}}.weather-main{{display:flex;align-items:center;gap:1rem;min-height:105px}}.weather-icon{{font-size:4rem;line-height:1;filter:drop-shadow(0 5px 5px #173b3015)}}.weather-condition{{margin:0;color:#47625d;font-size:.9rem;font-weight:700}}.weather-temperature{{margin:.1rem 0;font-size:2rem;line-height:1.2;font-weight:800;letter-spacing:-.04em;color:#183e3a}}.weather-subtitle{{margin:0;color:var(--muted);font-size:.75rem}}.weather-details{{margin:.8rem 0 0;padding-top:.65rem;border-top:1px solid #edf1ef;color:#52655f;font-size:.84rem}}.weather-source{{margin:.9rem 0 0;color:var(--muted);font-size:.78rem}}.hourly-heading{{margin:1.2rem 0 .6rem;font-size:1rem}}.hourly-scroll{{display:flex;gap:.65rem;overflow-x:auto;padding:.2rem .1rem .7rem}}.hourly-card{{flex:0 0 112px;padding:.75rem;background:#fff;border:1px solid var(--line);border-radius:12px;text-align:center}}.hourly-time{{margin:0;font-weight:800}}.hourly-icon{{display:block;font-size:1.7rem;margin:.3rem 0}}.hourly-temp{{margin:0;font-size:1.2rem;font-weight:800}}.hourly-condition{{margin:.2rem 0;min-height:2.5em;font-size:.75rem;color:var(--muted)}}.hourly-detail{{margin:0;font-size:.7rem;color:var(--muted)}}.content-layout{{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:1.5rem;align-items:start}}.briefing-main{{min-width:0}}.nba-sidebar{{min-width:0;position:sticky;top:1rem}}.nba-panel{{background:#fff;border:1px solid var(--line);border-radius:16px;padding:1rem}}.nba-panel h2{{margin:.15rem 0 .9rem;border:0;font-size:1.25rem}}.nba-panel h2:before{{display:none}}.nba-eyebrow{{margin:0;color:#146b65;font-size:.7rem;font-weight:850;letter-spacing:.1em;text-transform:uppercase}}.nba-game{{padding:.7rem 0;border-top:1px solid var(--line)}}.nba-team+.nba-team{{margin-top:.55rem}}.nba-team-line{{display:flex;align-items:center;gap:.5rem;min-width:0}}.nba-logo{{width:30px;height:30px;object-fit:contain;flex:0 0 30px}}.nba-team-name{{font-size:.86rem;font-weight:750;flex:1}}.nba-score{{font-size:1.05rem;font-variant-numeric:tabular-nums}}.nba-winner .nba-score{{color:#146b65}}.nba-leader{{margin:.15rem 0 0 38px;font-size:.72rem;line-height:1.4;color:#53636d}}.nba-leader strong{{color:var(--ink)}}.nba-muted,.nba-empty{{color:var(--muted);font-size:.82rem}}.nba-source{{margin:.75rem 0 0;padding-top:.6rem;border-top:1px solid var(--line);font-size:.68rem;color:var(--muted)}}.player{{padding:1.1rem 1.3rem;background:#fff;border:1px solid var(--line);border-radius:16px}}.positive-article-section{{margin-top:2.5rem;padding:1.4rem;background:linear-gradient(135deg,#e7f5ec,#f7faf3);border:1px solid #cfe7d7;border-radius:18px}}
+.weather{{padding:1.25rem 1.4rem;background:linear-gradient(135deg,#e7f1f0,#f3f8f6);border:1px solid #d3e5e1;border-radius:18px}}.weather h2{{margin:.1rem 0 1rem;border:0}}.weather h2:before{{display:none}}.weather-grid{{display:grid;grid-template-columns:1fr 1fr;gap:1rem}}.weather-card{{padding:1.1rem 1.2rem;background:#fff;border:1px solid #dce9e6;border-radius:14px;min-width:0}}.weather-label{{margin:0 0 .55rem;color:#53756d;font-size:.7rem;font-weight:800;letter-spacing:.1em}}.weather-main{{display:flex;align-items:center;gap:1rem;min-height:105px}}.weather-icon{{font-size:4rem;line-height:1;filter:drop-shadow(0 5px 5px #173b3015)}}.weather-condition{{margin:0;color:#47625d;font-size:.9rem;font-weight:700}}.weather-temperature{{margin:.1rem 0;font-size:2rem;line-height:1.2;font-weight:800;letter-spacing:-.04em;color:#183e3a}}.weather-subtitle{{margin:0;color:var(--muted);font-size:.75rem}}.weather-details{{margin:.8rem 0 0;padding-top:.65rem;border-top:1px solid #edf1ef;color:#52655f;font-size:.84rem}}.weather-source{{margin:.9rem 0 0;color:var(--muted);font-size:.78rem}}.hourly-heading{{margin:1.2rem 0 .6rem;font-size:1rem}}.hourly-scroll{{display:flex;gap:.65rem;overflow-x:auto;padding:.2rem .1rem .7rem}}.hourly-card{{flex:0 0 112px;padding:.75rem;background:#fff;border:1px solid var(--line);border-radius:12px;text-align:center}}.hourly-time{{margin:0;font-weight:800}}.hourly-icon{{display:block;font-size:1.7rem;margin:.3rem 0}}.hourly-temp{{margin:0;font-size:1.2rem;font-weight:800}}.hourly-condition{{margin:.2rem 0;min-height:2.5em;font-size:.75rem;color:var(--muted)}}.hourly-detail{{margin:0;font-size:.7rem;color:var(--muted)}}.content-layout{{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:1.5rem;align-items:start}}.briefing-main{{min-width:0}}.science-columns{{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:1.1rem;align-items:start}}.science-columns>section{{min-width:0}}.science-columns article.article-card{{grid-template-columns:1fr;gap:0}}.science-columns .article-image-link,.science-columns .article-image,.science-columns .article-image-placeholder{{height:170px;min-height:170px;max-height:210px}}.science-columns .article-content{{padding:1rem}}.nba-sidebar{{min-width:0;position:sticky;top:1rem}}.nba-panel{{background:#fff;border:1px solid var(--line);border-radius:16px;padding:1rem}}.nba-panel h2{{margin:.15rem 0 .9rem;border:0;font-size:1.25rem}}.nba-panel h2:before{{display:none}}.nba-eyebrow{{margin:0;color:#146b65;font-size:.7rem;font-weight:850;letter-spacing:.1em;text-transform:uppercase}}.nba-game{{padding:.7rem 0;border-top:1px solid var(--line)}}.nba-team+.nba-team{{margin-top:.55rem}}.nba-team-line{{display:flex;align-items:center;gap:.5rem;min-width:0}}.nba-logo{{width:30px;height:30px;object-fit:contain;flex:0 0 30px}}.nba-team-name{{font-size:.86rem;font-weight:750;flex:1}}.nba-score{{font-size:1.05rem;font-variant-numeric:tabular-nums}}.nba-winner .nba-score{{color:#146b65}}.nba-leader{{margin:.15rem 0 0 38px;font-size:.72rem;line-height:1.4;color:#53636d}}.nba-leader strong{{color:var(--ink)}}.nba-muted,.nba-empty{{color:var(--muted);font-size:.82rem}}.nba-source{{margin:.75rem 0 0;padding-top:.6rem;border-top:1px solid var(--line);font-size:.68rem;color:var(--muted)}}.player{{padding:1.1rem 1.3rem;background:#fff;border:1px solid var(--line);border-radius:16px}}.positive-article-section{{margin-top:2.5rem;padding:1.4rem;background:linear-gradient(135deg,#e7f5ec,#f7faf3);border:1px solid #cfe7d7;border-radius:18px}}
 .positive-article-kicker{{margin:0;color:#23744c;font-size:.7rem;font-weight:850;letter-spacing:.1em}}
 .positive-article-section>h2{{margin:.2rem 0 1rem;color:#174b35;border:0}}
 .positive-article-section>h2:before{{display:none}}
 .positive-article-section .article-card{{background:#fff;border-color:#d6e8dc}}
 .positive-article-section .abstract-status{{background:#e7f5ec;color:#23744c}}
 audio{{width:100%;margin:.4rem 0}}.intro{{color:var(--muted);max-width:800px}}footer{{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.85rem}}
-@media(max-width:860px){{.content-layout{{grid-template-columns:1fr}}.nba-sidebar{{position:static;grid-row:1}}}}@media(max-width:640px){{body{{padding:0 .85rem 2rem}}.hero{{margin-left:-.85rem!important;margin-right:-.85rem!important;padding:2rem .85rem!important}}.weather-grid{{grid-template-columns:1fr}}.weather-card{{padding:1rem}}.weather-icon{{font-size:3.4rem}}article.article-card{{grid-template-columns:1fr;gap:0}}.article-image-link,.article-image,.article-image-placeholder{{height:190px;min-height:190px;max-height:230px}}.article-content{{padding:1rem 1.1rem 1.2rem}}h2{{font-size:1.35rem}}}}
+@media(max-width:1100px){{.science-columns{{grid-template-columns:1fr}}.science-columns article.article-card{{grid-template-columns:minmax(180px,30%) 1fr}}.science-columns .article-image-link,.science-columns .article-image,.science-columns .article-image-placeholder{{height:100%;min-height:180px;max-height:260px}}.science-columns .article-content{{padding:1rem 1.1rem 1.2rem 0}}}}@media(max-width:860px){{.content-layout{{grid-template-columns:1fr}}.nba-sidebar{{position:static;grid-row:1}}}}@media(max-width:640px){{body{{padding:0 .85rem 2rem}}.hero{{margin-left:-.85rem!important;margin-right:-.85rem!important;padding:2rem .85rem!important}}.weather-grid{{grid-template-columns:1fr}}.weather-card{{padding:1rem}}.weather-icon{{font-size:3.4rem}}article.article-card{{grid-template-columns:1fr;gap:0}}.article-image-link,.article-image,.article-image-placeholder{{height:190px;min-height:190px;max-height:230px}}.article-content{{padding:1rem 1.1rem 1.2rem}}h2{{font-size:1.35rem}}}}
 </style></head><body>
 <header class="hero"><p class="kicker">Briefing quotidien · {NOW:%A %d %B %Y}</p><h1>L’essentiel du monde et de la recherche.</h1><p>Un regard sur l’actualité, les découvertes scientifiques et le confort des bâtiments, en quelques minutes.</p><blockquote class="daily-quote">« {html.escape(daily_quote)} »<span class="daily-quote-author"> — {html.escape(daily_quote_author)}</span></blockquote>{fun_fact_html}{relaxation_html}</header>
 <p class="intro">Les visuels proviennent des flux RSS ou des métadonnées des éditeurs lorsqu’ils sont disponibles. Ils servent d’aperçus et renvoient vers les publications originales.</p>
 <h2>Écouter le briefing</h2><div class="player">{"<audio controls src='briefing.mp3'></audio>" if audio_path.exists() else "<p>Audio indisponible pour cette exécution.</p>"}<p><a href="briefing.txt">Lire ou télécharger le texte complet ↗</a></p></div>
 {weather_html(weather_text)}
 <div class="content-layout"><main class="briefing-main">
-<h2>3 actualités mondiales</h2>{''.join(item_html(x) for x in world)}
-<h2>3 articles de Nature (dont Nature Chemistry)</h2>{''.join(item_html(x) for x in nature)}
-<h2>3 articles de Building and Environment</h2>{''.join(item_html(x) for x in building)}
+<section class="world-section"><h2>3 actualités mondiales</h2>{''.join(item_html(x) for x in world)}</section>
+<div class="science-columns"><section class="nature-section"><h2>3 articles de Nature (dont Nature Chemistry)</h2>{''.join(item_html(x) for x in nature)}</section>
+<section class="building-section"><h2>3 articles de Building and Environment</h2>{''.join(item_html(x) for x in building)}</section></div>
 </main>{nba_scores_html(nba_games)}</div>
 <section class="positive-article-section"><p class="positive-article-kicker">POUR FINIR SUR UNE BONNE NOTE</p><h2>Une bonne nouvelle pour terminer le briefing</h2>{item_html(positive_article) if positive_article else '<p>La sélection d’articles positifs est temporairement indisponible. Réessaie au prochain briefing.</p>'}</section>
 <footer><p>Prototype personnel. Les images restent hébergées par leurs éditeurs et peuvent ne pas être disponibles si l’accès automatisé est bloqué. Certains éditeurs ne rendent pas l’abstract complet accessible.</p></footer></body></html>"""
