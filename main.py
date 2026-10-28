@@ -1473,6 +1473,19 @@ def main():
         ("Chien-Shiung Wu","Une expérience qui a changé la physique","L’expérience de Wu a montré que la parité n’est pas conservée dans certaines interactions faibles, confirmant une prédiction théorique majeure sur les symétries en physique.","https://www.aps.org/archives/publications/apsnews/200801/physicshistory.cfm","Chien-Shiung Wu.jpg"),
         ("Frédéric Chopin","Une musique façonnée par la danse","Même dans ses œuvres de concert, Chopin s’est souvent inspiré de danses polonaises comme la mazurka et la polonaise, en les transformant en pièces de concert raffinées.","https://chopin.nifc.pl/en/chopin/biography","Frederic Chopin photo.jpeg"),
         ("Albert Einstein","L’imagination et la curiosité","Einstein insistait souvent sur le rôle de l’imagination et du questionnement dans la recherche. Ses travaux ont profondément modifié notre compréhension de l’espace, du temps et de la gravitation.","https://www.nobelprize.org/prizes/physics/1921/einstein/biographical/","Albert Einstein Head.jpg")
+
+        ("Lutherie du violon","Pourquoi le bois d’épicéa pour la table ?","La table d’harmonie est souvent taillée dans l’épicéa : léger et rigide, ce bois transmet efficacement les vibrations des cordes et contribue à la projection du son.","https://www.metmuseum.org/toah/hd/strd/hd_strd.htm",""),
+        ("Lutherie du violon","L’érable du fond et des éclisses","Le fond et les éclisses sont fréquemment en érable. Sa rigidité et ses propriétés mécaniques, combinées à celles de la table, participent à la réponse acoustique propre de chaque instrument.","https://www.britannica.com/art/violin",""),
+        ("Lutherie du violon","Le chevalet n’est pas collé","Le chevalet d’un violon est maintenu en place par la pression des cordes : il transmet leurs vibrations à la table. Sa position et sa forme influencent fortement le réglage et le son.","https://www.britannica.com/art/violin",""),
+        ("Lutherie du violon","L’âme, une petite pièce essentielle","La petite cheville de bois placée à l’intérieur du violon, appelée âme, n’est pas simplement décorative : son emplacement et son ajustement influencent la transmission des vibrations et l’équilibre sonore.","https://www.britannica.com/art/violin",""),
+        ("Lutherie du violon","Le vernis n’est pas qu’une couleur","Le vernis protège le bois et donne à l’instrument son aspect. Les luthiers recherchent aussi une application adaptée qui n’entrave pas excessivement la vibration des pièces en bois.","https://www.metmuseum.org/toah/hd/strd/hd_strd.htm",""),
+        ("Lutherie des cordes frottées","Pourquoi les crins de l’archet accrochent-ils la corde ?","Les crins sont enduits de colophane, une résine qui augmente l’adhérence entre l’archet et la corde. Cette alternance d’accrochage et de glissement entretient la vibration qui produit le son.","https://www.britannica.com/art/violin",""),
+        ("Lutherie des cordes frottées","Le chevalet du violoncelle et de l’alto","Comme sur le violon, le chevalet des instruments à cordes frottées transmet les vibrations des cordes à la table. Sa hauteur et sa courbure doivent être adaptées à l’instrument et au jeu du musicien.","https://www.britannica.com/art/violin",""),
+        ("Lutherie du violon","Chaque violon a sa propre voix","Deux violons fabriqués selon un même modèle peuvent sonner différemment : densité du bois, épaisseurs, voûtes, réglage du chevalet et de l’âme contribuent à leur personnalité acoustique.","https://www.metmuseum.org/toah/hd/strd/hd_strd.htm",""),
+        ("Lutherie du violon","Stradivari et la tradition de Crémone","Antonio Stradivari, actif à Crémone aux XVIIe et XVIIIe siècles, est devenu l’un des luthiers les plus célèbres. Ses instruments sont étudiés pour leur facture, leur histoire et leurs qualités sonores.","https://www.britannica.com/biography/Antonio-Stradivari",""),
+        ("Lutherie du violon","La touche est généralement en ébène","La touche des violons est souvent réalisée en ébène, un bois dense et résistant à l’usure provoquée par les doigts et les cordes. Elle est soigneusement profilée pour faciliter le jeu.","https://www.britannica.com/art/violin",""),
+        ("Lutherie des cordes frottées","La mèche de l’archet s’use","Les crins de l’archet s’usent et se cassent avec le temps ; la mèche doit donc être remplacée périodiquement par un professionnel. La quantité de colophane et l’état des crins changent aussi la sensation de jeu.","https://www.britannica.com/art/violin",""),
+        ("Lutherie du violon","Un bon réglage peut transformer l’instrument","Le réglage d’un violon ne se limite pas à accorder les cordes : ajustement de l’âme, du chevalet, des cordes et du sillet peut améliorer la facilité de jeu et équilibrer la réponse de l’instrument.","https://www.britannica.com/art/violin",""),
     ]
     fact = fun_facts[(NOW.timetuple().tm_yday - 1) % len(fun_facts)]
     fact_image = "https://commons.wikimedia.org/wiki/Special:FilePath/" + requests.utils.quote(fact[4]) + "?width=640"
@@ -1487,6 +1500,41 @@ def main():
         f'<p>{html.escape(fact[2])}</p>'
         f'<a href="{html.escape(fact[3], quote=True)}" target="_blank" rel="noopener noreferrer">En savoir plus ↗</a>'
         '</div></div></section>'
+    )
+
+
+    # Suggestion quotidienne d'écoute, avec recherche directe sur Spotify.
+    violin_pieces = [
+        ("Jean-Sébastien Bach","Partita n° 2 en ré mineur, BWV 1004 : Chaconne"),
+        ("Antonio Vivaldi","Concerto pour violon en sol mineur, RV 315 : L’Été, 3e mouvement"),
+        ("Jules Massenet","Méditation de Thaïs"),
+        ("Camille Saint-Saëns","Introduction et Rondo capriccioso"),
+        ("Niccolò Paganini","Caprice n° 24 en la mineur"),
+        ("Claude Debussy","Sonate pour violon et piano, L. 140"),
+        ("Gabriel Fauré","Berceuse, op. 16"),
+        ("Felix Mendelssohn","Concerto pour violon en mi mineur, op. 64 : 1er mouvement"),
+        ("Max Bruch","Concerto pour violon n° 1 en sol mineur, op. 26 : 2e mouvement"),
+        ("Johann Sebastian Bach","Sonate n° 1 en sol mineur, BWV 1001 : Adagio"),
+        ("Henryk Wieniawski","Légende, op. 17"),
+        ("Fritz Kreisler","Liebesleid"),
+        ("Maurice Ravel","Tzigane"),
+        ("Ludwig van Beethoven","Romance pour violon n° 2 en fa majeur, op. 50"),
+        ("Pablo de Sarasate","Zigeunerweisen, op. 20"),
+        ("Arvo Pärt","Spiegel im Spiegel"),
+        ("Edvard Grieg","Sonate pour violon n° 3 en do mineur, op. 45 : 2e mouvement"),
+        ("Jean Sibelius","Concerto pour violon en ré mineur, op. 47 : 1er mouvement"),
+        ("Wolfgang Amadeus Mozart","Concerto pour violon n° 3 en sol majeur, K. 216 : 1er mouvement"),
+        ("Johann Sebastian Bach","Concerto pour deux violons en ré mineur, BWV 1043 : Largo ma non tanto"),
+    ]
+    music_piece = violin_pieces[(NOW.timetuple().tm_yday - 1) % len(violin_pieces)]
+    spotify_search = "https://open.spotify.com/search/" + requests.utils.quote(" ".join(music_piece))
+    music_suggestion_html = (
+        '<section class="fun-fact music-suggestion" aria-label="Suggestion musicale du jour">'
+        '<p class="fun-fact-kicker">À ÉCOUTER AUJOURD’HUI · VIOLON</p>'
+        f'<div class="fun-fact-copy"><h2>{html.escape(music_piece[1])}</h2>'
+        f'<p>{html.escape(music_piece[0])} · Une suggestion de musique classique pour votre écoute du jour.</p>'
+        f'<a href="{html.escape(spotify_search, quote=True)}" target="_blank" rel="noopener noreferrer">Écouter / rechercher sur Spotify ↗</a>'
+        '</div></section>'
     )
 
     (SITE / "briefing.txt").write_text(script, encoding="utf-8")
@@ -1533,7 +1581,7 @@ article.article-card{{display:grid;grid-template-columns:minmax(180px,30%) 1fr;g
 audio{{width:100%;margin:.4rem 0}}.intro{{color:var(--muted);max-width:800px}}footer{{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.85rem}}
 @media(max-width:1100px){{.science-columns{{grid-template-columns:1fr}}.science-columns article.article-card{{grid-template-columns:minmax(180px,30%) 1fr}}.science-columns .article-image-link,.science-columns .article-image,.science-columns .article-image-placeholder{{height:100%;min-height:180px;max-height:260px}}.science-columns .article-content{{padding:1rem 1.1rem 1.2rem 0}}}}@media(max-width:860px){{.content-layout{{grid-template-columns:1fr}}.nba-sidebar{{position:static;grid-row:1}}}}@media(max-width:640px){{body{{padding:0 .85rem 2rem}}.hero{{margin-left:-.85rem!important;margin-right:-.85rem!important;padding:2rem .85rem!important}}.weather-grid{{grid-template-columns:1fr}}.weather-card{{padding:1rem}}.weather-icon{{font-size:3.4rem}}article.article-card{{grid-template-columns:1fr;gap:0}}.article-image-link,.article-image,.article-image-placeholder{{height:190px;min-height:190px;max-height:230px}}.article-content{{padding:1rem 1.1rem 1.2rem}}h2{{font-size:1.35rem}}}}
 </style></head><body>
-<header class="hero"><p class="kicker">Briefing quotidien · {NOW:%A %d %B %Y}</p><h1>L’essentiel du monde et de la recherche.</h1><p>Un regard sur l’actualité, les découvertes scientifiques et le confort des bâtiments, en quelques minutes.</p><blockquote class="daily-quote">« {html.escape(daily_quote)} »<span class="daily-quote-author"> — {html.escape(daily_quote_author)}</span></blockquote>{fun_fact_html}{relaxation_html}</header>
+<header class="hero"><p class="kicker">Briefing quotidien · {NOW:%A %d %B %Y}</p><h1>L’essentiel du monde et de la recherche.</h1><p>Un regard sur l’actualité, les découvertes scientifiques et le confort des bâtiments, en quelques minutes.</p><blockquote class="daily-quote">« {html.escape(daily_quote)} »<span class="daily-quote-author"> — {html.escape(daily_quote_author)}</span></blockquote>{fun_fact_html}{music_suggestion_html}{relaxation_html}</header>
 <p class="intro">Les visuels proviennent des flux RSS ou des métadonnées des éditeurs lorsqu’ils sont disponibles. Ils servent d’aperçus et renvoient vers les publications originales.</p>
 <h2>Écouter le briefing</h2><div class="player">{"<audio controls src='briefing.mp3'></audio>" if audio_path.exists() else "<p>Audio indisponible pour cette exécution.</p>"}<p><a href="briefing.txt">Lire ou télécharger le texte complet ↗</a></p></div>
 {weather_html(weather_text)}
