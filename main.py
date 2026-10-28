@@ -245,36 +245,52 @@ def _building_and_environment_image(soup, page_url):
     return ""
 
 def fetch_article_image(item):
-    """Find publisher illustrations; for Building and Environment prefer its graphical abstract."""
-    is_building = item.get("category") == "building"
-    # Other sections keep the existing fast path and behavior.
-    if item.get("image_url") and not is_building:
-        return item["image_url"]
+    """Find article illustrations; prioritize graphical abstracts for Nature and Elsevier."""
+    category = item.get("category", "")
+    fallback_image = item.get("image_url", "") or ""
     try:
         response = requests.get(item.get("link", ""), timeout=15, headers=HEADERS)
         if response.status_code == 200 and "text/html" in response.headers.get("content-type", ""):
             soup = BeautifulSoup(response.text, "html.parser")
-            if is_building:
+            if category == "building":
                 preferred = _building_and_environment_image(soup, response.url)
                 if preferred:
                     item["image_url"] = preferred
                     item["image_source"] = "graphical_abstract_or_figure"
                     return preferred
-            # Keep the publisher metadata fallback for every section, including
-            # Building and Environment when no graphical abstract/figure is exposed.
+            else:
+                # Springer Nature sometimes exposes the graphical abstract in a
+                # dedicated figure/container instead of the RSS image field.
+                for selector in (
+                    "[class*='graphical-abstract']", "[class*='graphicalAbstract']",
+                    "[id*='graphical-abstract']", "[id*='graphicalAbstract']",
+                    "figure[aria-label*='graphical' i]", "div[aria-label*='graphical' i]",
+                    ".c-article__image", ".c-article-header__image"
+                ):
+                    try:
+                        for container in soup.select(selector):
+                            nodes = [container] if container.name == "img" else container.select("img, source")
+                            for node in nodes:
+                                url = _article_image_url(node, response.url)
+                                if url:
+                                    item["image_url"] = url
+                                    item["image_source"] = "graphical_abstract_or_figure"
+                                    return url
+                    except Exception:
+                        continue
             for meta in soup.find_all("meta"):
                 key = (meta.get("property") or meta.get("name") or "").strip().lower()
                 value = (meta.get("content") or "").strip()
                 if key in {"og:image", "og:image:url", "twitter:image", "twitter:image:src",
-                           "citation_thumbnail", "thumbnail"} and value.startswith(("https://", "http://")):
+                           "citation_thumbnail", "citation_figure", "thumbnail"} and value.startswith(("https://", "http://")):
                     if not re.search(r"\\.(pdf|svg)(?:[?#]|$)", value, re.I):
                         item["image_url"] = value
                         item["image_source"] = "publisher_metadata"
                         return value
     except Exception as ex:
-        print(f"Article image lookup failed [{item.get('title','')[:70]}]: {type(ex).__name__}")
-    # Preserve the RSS image if one was supplied; otherwise leave the placeholder.
-    return item.get("image_url", "") or ""
+        print(f"Article image lookup failed [{item.get('title','')[:70}]: {type(ex).__name__}")
+    # Keep an RSS image as fallback if the publisher page blocks automated access.
+    return fallback_image
 
 
 def enrich_images(items):
@@ -983,46 +999,54 @@ def select_items():
     for x in world_all:
         if len(world) >= 3: break
         if x not in world: world.append(x)
-    # One scientific reading per day, rotated across all three journals.
-    nature = scientific_papers_from_last_year([x for x in exclude_monthly_duplicates(collect("nature")) if is_open_access(x)])
-    chemistry = scientific_papers_from_last_year([x for x in exclude_monthly_duplicates(collect("chemistry")) if is_open_access(x)])
+    # Fixed daily quota: 2 Nature, 2 Building and Environment, 1 Nature Chemistry.
+    nature = scientific_papers_from_last_year([
+        x for x in exclude_monthly_duplicates(collect("nature")) if is_open_access(x)
+    ])
+    chemistry = scientific_papers_from_last_year([
+        x for x in exclude_monthly_duplicates(collect("chemistry")) if is_open_access(x)
+    ])
     building_all = exclude_monthly_duplicates(collect("building"))
     building = [x for x in scientific_papers_from_last_year(building_all) if is_open_access(x)]
-    print(f"Building and Environment five-year OA pool: {len(building)} papers")
+
     ranked_building = []
     for item in building:
         score = sum(term in (item["title"] + " " + item["summary"]).lower() for term in THERMAL_TERMS)
         ranked_building.append((score, item))
     relevant_building = [item for score, item in sorted(ranked_building, key=lambda pair: pair[0], reverse=True) if score > 0]
-    # Prioritize relevant Building and Environment papers, while keeping other OA papers as a reserve.
-    building_pool = relevant_building + [item for _, item in sorted(ranked_building, key=lambda pair: pair[0], reverse=True) if item not in relevant_building]
-    science_pool = unique(nature + chemistry + building_pool)
-    print(f"Open-access five-year pool: Nature/Chemistry={len(nature + chemistry)}, Building and Environment={len(building)}; total unique={len(science_pool)}")
+    building_pool = relevant_building + [
+        item for _, item in sorted(ranked_building, key=lambda pair: pair[0], reverse=True)
+        if item not in relevant_building
+    ]
+    print(
+        f"Open-access five-year pools: Nature={len(nature)}, "
+        f"Building and Environment={len(building)}, Nature Chemistry={len(chemistry)}"
+    )
 
-    # Publish two scientific readings per day, advancing through the five-year OA
-    # pool and accepting only articles whose abstracts can actually be retrieved.
-    selected_nature = []
-    selected_building = []
-    selected_keys = set()
-    for candidate in science_pool:
-        if len(selected_nature) + len(selected_building) >= 2:
-            break
-        key = article_history_keys(candidate)
-        if key[0] in selected_keys or key[1] in selected_keys:
-            continue
-        enrich_abstracts([candidate])
-        if candidate.get("abstract_status") not in ("unavailable", "rss_fallback", "not_checked") and candidate.get("abstract"):
-            if candidate.get("category") in ("nature", "chemistry"):
-                selected_nature.append(candidate)
-            elif candidate.get("category") == "building":
-                selected_building.append(candidate)
-            selected_keys.update(value for value in key if value)
-            print(f"Today's scientific reading {len(selected_nature) + len(selected_building)}/2: [{candidate.get('source', '')}] {candidate.get('title', '')}")
-        else:
-            print(f"Skipping scientific article without a full abstract: {candidate.get('title','')[:90]}")
-    selected_count = len(selected_nature) + len(selected_building)
-    if selected_count < 2:
-        print(f"Only {selected_count}/2 scientific articles found with accessible abstracts.")
+    def select_with_abstracts(candidates, count, label):
+        selected = []
+        seen = set()
+        for candidate in candidates:
+            key = article_history_keys(candidate)
+            if not key[0] or key[0] in seen or key[1] in seen:
+                continue
+            seen.update(value for value in key if value)
+            enrich_abstracts([candidate])
+            if candidate.get("abstract_status") not in ("unavailable", "rss_fallback", "not_checked") and candidate.get("abstract"):
+                selected.append(candidate)
+                print(f"Selected {label} {len(selected)}/{count}: {candidate.get('title', '')}")
+            else:
+                print(f"Skipping {label} article without accessible full abstract: {candidate.get('title', '')[:90]}")
+            if len(selected) >= count:
+                break
+        if len(selected) < count:
+            print(f"Only {len(selected)}/{count} {label} articles found with accessible abstracts.")
+        return selected
+
+    selected_nature = select_with_abstracts(nature, 2, "Nature")
+    selected_building = select_with_abstracts(building_pool, 2, "Building and Environment")
+    selected_chemistry = select_with_abstracts(chemistry, 1, "Nature Chemistry")
+    selected_nature.extend(selected_chemistry)
     return world[:3], selected_nature, selected_building
 
 def gemini_rewrite(sections, weather_text):
@@ -1037,7 +1061,7 @@ def gemini_rewrite(sections, weather_text):
             blocks.append(f"{i}. Titre: {x['title']}\nSource: {x['source']}\nLien: {x['link']}\nAbstract (anglais, récupéré ou RSS): {abstract}\n")
     prompt = f"""Prépare un briefing matinal en français, naturel à écouter, daté du {NOW:%d/%m/%Y}.
 Météo : {weather_text}
-Utilise exclusivement les informations fournies, sans inventer. Pour chaque article scientifique, explique en français le contenu de l'abstract, traduis fidèlement les informations utiles, distingue résultats et limites si l'abstract le permet. Ne cite pas les noms des auteurs. Ne termine pas les présentations par une phrase invitant à consulter la source. Structure : météo, 3 actualités mondiales, 3 articles de Nature dont un Nature Chemistry, 3 articles Building and Environment pertinents pour qualité de l'air intérieur/confort thermique. Environ 900 à 1300 mots maximum.
+Utilise exclusivement les informations fournies, sans inventer. Pour chaque article scientifique, explique en français le contenu de l'abstract, traduis fidèlement les informations utiles, distingue résultats et limites si l'abstract le permet. Ne cite pas les noms des auteurs. Ne termine pas les présentations par une phrase invitant à consulter la source. Structure : météo, 3 actualités mondiales, 2 articles de Nature, 1 article de Nature Chemistry, 2 articles de Building and Environment pertinents pour qualité de l'air intérieur/confort thermique. Environ 900 à 1300 mots maximum.
 Données :
 {''.join(blocks)}"""
     try:
@@ -1053,7 +1077,7 @@ Données :
 def fallback_script(weather_text, world, nature, building):
     lines = [f"Bonjour. Voici votre briefing du {NOW:%d/%m/%Y}.", weather_text]
     for label, entries in [("Actualités mondiales", world),
-                           ("Lecture scientifique du jour", nature),
+                           ("Nature et Nature Chemistry", nature),
                            ("Building and Environment : qualité de l'air et confort thermique", building)]:
         lines.append(label + ".")
         for i, x in enumerate(entries, 1):
@@ -1700,8 +1724,8 @@ audio{{width:100%;margin:.4rem 0}}.intro{{color:var(--muted);max-width:800px}}fo
 {weather_html(weather_text)}
 <div class="content-layout"><main class="briefing-main">
 <section class="world-section"><h2>3 actualités mondiales</h2>{''.join(item_html(x) for x in world)}</section>
-<div class="science-columns"><section class="nature-section"><h2>Lecture scientifique du jour — Nature / Nature Chemistry</h2>{''.join(item_html(x) for x in nature)}</section>
-<section class="building-section"><h2>Lecture scientifique du jour — Building and Environment</h2>{''.join(item_html(x) for x in building)}</section></div>
+<div class="science-columns"><section class="nature-section"><h2>2 articles de Nature + 1 de Nature Chemistry</h2>{''.join(item_html(x) for x in nature)}</section>
+<section class="building-section"><h2>2 articles de Building and Environment</h2>{''.join(item_html(x) for x in building)}</section></div>
 </main>{nba_scores_html(nba_games)}</div>
 <section class="positive-article-section"><p class="positive-article-kicker">POUR FINIR SUR UNE BONNE NOTE</p><h2>Une bonne nouvelle pour terminer le briefing</h2>{item_html(positive_article) if positive_article else '<p>La sélection d’articles positifs est temporairement indisponible. Réessaie au prochain briefing.</p>'}</section>
 <footer><p>Prototype personnel. Les images restent hébergées par leurs éditeurs et peuvent ne pas être disponibles si l’accès automatisé est bloqué. Certains éditeurs ne rendent pas l’abstract complet accessible.</p></footer></body></html>"""
