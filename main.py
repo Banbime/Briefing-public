@@ -999,22 +999,30 @@ def select_items():
     science_pool = unique(nature + chemistry + building_pool)
     print(f"Open-access five-year pool: Nature/Chemistry={len(nature + chemistry)}, Building and Environment={len(building)}; total unique={len(science_pool)}")
 
-    # The history filter has already removed previously published items; take the
-    # next eligible paper and only advance when an abstract is actually available.
-    candidates = science_pool
-    chosen = None
-    for candidate in candidates:
+    # Publish two scientific readings per day, advancing through the five-year OA
+    # pool and accepting only articles whose abstracts can actually be retrieved.
+    selected_nature = []
+    selected_building = []
+    selected_keys = set()
+    for candidate in science_pool:
+        if len(selected_nature) + len(selected_building) >= 2:
+            break
+        key = article_history_keys(candidate)
+        if key[0] in selected_keys or key[1] in selected_keys:
+            continue
         enrich_abstracts([candidate])
         if candidate.get("abstract_status") not in ("unavailable", "rss_fallback", "not_checked") and candidate.get("abstract"):
-            chosen = candidate
-            break
-        print(f"Skipping scientific article without a full abstract: {candidate.get('title','')[:90]}")
-    selected_nature = [chosen] if chosen and chosen.get("category") in ("nature", "chemistry") else []
-    selected_building = [chosen] if chosen and chosen.get("category") == "building" else []
-    if chosen:
-        print(f"Today's scientific reading: [{chosen.get('source', '')}] {chosen.get('title', '')}")
-    else:
-        print("No unused open-access scientific article with an available abstract was found.")
+            if candidate.get("category") in ("nature", "chemistry"):
+                selected_nature.append(candidate)
+            elif candidate.get("category") == "building":
+                selected_building.append(candidate)
+            selected_keys.update(value for value in key if value)
+            print(f"Today's scientific reading {len(selected_nature) + len(selected_building)}/2: [{candidate.get('source', '')}] {candidate.get('title', '')}")
+        else:
+            print(f"Skipping scientific article without a full abstract: {candidate.get('title','')[:90]}")
+    selected_count = len(selected_nature) + len(selected_building)
+    if selected_count < 2:
+        print(f"Only {selected_count}/2 scientific articles found with accessible abstracts.")
     return world[:3], selected_nature, selected_building
 
 def gemini_rewrite(sections, weather_text):
