@@ -19,8 +19,7 @@ HISTORY_URL = "https://banbime.github.io/Briefing-public/article_history.json"
 
 
 def load_monthly_history():
-    """Load the published history so daily runs avoid repeating articles within a month."""
-    current_month = NOW.strftime("%Y-%m")
+    """Load daily article history to cap repeat appearances over a rolling three-year window."""
     history = {}
     try:
         response = requests.get(HISTORY_URL, timeout=8, headers=HEADERS)
@@ -29,12 +28,14 @@ def load_monthly_history():
             if isinstance(payload, dict):
                 history = payload
     except Exception as ex:
-        print("Monthly article history unavailable:", type(ex).__name__)
-    history.setdefault(current_month, {"urls": [], "titles": []})
+        print("Article history unavailable:", type(ex).__name__)
+    history.setdefault(NOW.strftime("%Y-%m-%d"), {"urls": [], "titles": []})
     return history
 
 
 ARTICLE_HISTORY = load_monthly_history()
+MAX_ARTICLE_APPEARANCES = 8
+ARTICLE_HISTORY_DAYS = 365 * 3
 
 
 def article_history_keys(item):
@@ -42,27 +43,56 @@ def article_history_keys(item):
             re.sub(r"[^a-z0-9]+", " ", clean(item.get("title", "")).lower()).strip())
 
 
+def _history_records_in_window():
+    """Return dated history records from the rolling three-year window.
+
+    Older monthly records are supported as legacy data and count as one appearance
+    per article for that month; exact daily counts are available from the new format.
+    """
+    cutoff = (NOW.date() - datetime.timedelta(days=ARTICLE_HISTORY_DAYS)).isoformat()
+    records = []
+    for key, record in ARTICLE_HISTORY.items():
+        if not isinstance(record, dict):
+            continue
+        # New entries use YYYY-MM-DD. Legacy entries use YYYY-MM and are treated
+        # as one known appearance in the first day of that month.
+        record_date = key if re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", key) else (
+            key + "-01" if re.fullmatch(r"\\d{4}-\\d{2}", key) else ""
+        )
+        if record_date and cutoff <= record_date <= NOW.date().isoformat():
+            records.append(record)
+    return records
+
+
 def exclude_monthly_duplicates(items, used=None):
-    """Remove URLs or normalized titles already published during the current month."""
+    """Allow an article at most eight appearances in three years; avoid duplicates in one briefing."""
     used = used or set()
-    records = ARTICLE_HISTORY.values() if isinstance(ARTICLE_HISTORY, dict) else []
-    urls = {str(value).strip().rstrip("/").lower()
-            for record in records for value in record.get("urls", [])}
-    titles = {re.sub(r"[^a-z0-9]+", " ", clean(value).lower()).strip()
-              for record in records for value in record.get("titles", [])}
+    url_counts, title_counts = {}, {}
+    for record in _history_records_in_window():
+        for value in record.get("urls", []):
+            key = str(value).strip().rstrip("/").lower()
+            if key:
+                url_counts[key] = url_counts.get(key, 0) + 1
+        for value in record.get("titles", []):
+            key = re.sub(r"[^a-z0-9]+", " ", clean(value).lower()).strip()
+            if key:
+                title_counts[key] = title_counts.get(key, 0) + 1
+
     filtered = []
     for item in items:
         url, title = article_history_keys(item)
-        if url in urls or title in titles or url in used or title in used:
+        if (url in used or title in used
+                or url_counts.get(url, 0) >= MAX_ARTICLE_APPEARANCES
+                or title_counts.get(title, 0) >= MAX_ARTICLE_APPEARANCES):
             continue
         filtered.append(item)
     return filtered
 
 
 def save_monthly_history(items):
-    """Persist this briefing's chosen stories in the Pages artifact for tomorrow's run."""
-    month = NOW.strftime("%Y-%m")
-    record = ARTICLE_HISTORY.setdefault(month, {"urls": [], "titles": []})
+    """Persist the articles shown today, retaining three years of daily appearance counts."""
+    day = NOW.strftime("%Y-%m-%d")
+    record = ARTICLE_HISTORY.setdefault(day, {"urls": [], "titles": []})
     urls = set(record.get("urls", []))
     titles = set(record.get("titles", []))
     for item in items:
@@ -73,11 +103,14 @@ def save_monthly_history(items):
             urls.add(url)
         if title:
             titles.add(title)
-    cutoff_month = (NOW - datetime.timedelta(days=365 * 5)).strftime("%Y-%m")
+    cutoff = (NOW.date() - datetime.timedelta(days=ARTICLE_HISTORY_DAYS)).isoformat()
     for key in list(ARTICLE_HISTORY):
-        if key < cutoff_month:
+        record_date = key if re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", key) else (
+            key + "-01" if re.fullmatch(r"\\d{4}-\\d{2}", key) else ""
+        )
+        if record_date and record_date < cutoff:
             ARTICLE_HISTORY.pop(key, None)
-    ARTICLE_HISTORY[month] = {"urls": sorted(urls), "titles": sorted(titles)}
+    ARTICLE_HISTORY[day] = {"urls": sorted(urls), "titles": sorted(titles)}
     (SITE / "article_history.json").write_text(
         json.dumps(ARTICLE_HISTORY, ensure_ascii=False, indent=2), encoding="utf-8"
     )
