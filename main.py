@@ -1061,7 +1061,7 @@ def gemini_rewrite(sections, weather_text):
             blocks.append(f"{i}. Titre: {x['title']}\nSource: {x['source']}\nLien: {x['link']}\nAbstract (anglais, récupéré ou RSS): {abstract}\n")
     prompt = f"""Prépare un briefing matinal en français, naturel à écouter, daté du {NOW:%d/%m/%Y}.
 Météo : {weather_text}
-Utilise exclusivement les informations fournies, sans inventer. Pour chaque article scientifique, explique en français le contenu de l'abstract, traduis fidèlement les informations utiles, distingue résultats et limites si l'abstract le permet. Ne cite pas les noms des auteurs. Ne termine pas les présentations par une phrase invitant à consulter la source. Structure : météo, 3 actualités mondiales, 3 articles de Nature dont un Nature Chemistry, 3 articles Building and Environment pertinents pour qualité de l'air intérieur/confort thermique. Environ 900 à 1300 mots maximum.
+Utilise exclusivement les informations fournies, sans inventer. Pour chaque article scientifique, explique en français le contenu de l'abstract, traduis fidèlement les informations utiles, distingue résultats et limites si l'abstract le permet. Ne cite pas les noms des auteurs. Ne termine pas les présentations par une phrase invitant à consulter la source. Structure : météo, 3 actualités mondiales, 2 articles de Nature, 1 article de Nature Chemistry, 2 articles de Building and Environment pertinents pour qualité de l'air intérieur/confort thermique. Environ 900 à 1300 mots maximum.
 Données :
 {''.join(blocks)}"""
     try:
@@ -1077,7 +1077,7 @@ Données :
 def fallback_script(weather_text, world, nature, building):
     lines = [f"Bonjour. Voici votre briefing du {NOW:%d/%m/%Y}.", weather_text]
     for label, entries in [("Actualités mondiales", world),
-                           ("Lecture scientifique du jour", nature),
+                           ("Nature et Nature Chemistry", nature),
                            ("Building and Environment : qualité de l'air et confort thermique", building)]:
         lines.append(label + ".")
         for i, x in enumerate(entries, 1):
@@ -1724,8 +1724,8 @@ audio{{width:100%;margin:.4rem 0}}.intro{{color:var(--muted);max-width:800px}}fo
 {weather_html(weather_text)}
 <div class="content-layout"><main class="briefing-main">
 <section class="world-section"><h2>3 actualités mondiales</h2>{''.join(item_html(x) for x in world)}</section>
-<div class="science-columns"><section class="nature-section"><h2>Lecture scientifique du jour — Nature / Nature Chemistry</h2>{''.join(item_html(x) for x in nature)}</section>
-<section class="building-section"><h2>Lecture scientifique du jour — Building and Environment</h2>{''.join(item_html(x) for x in building)}</section></div>
+<div class="science-columns"><section class="nature-section"><h2>2 articles de Nature + 1 de Nature Chemistry</h2>{''.join(item_html(x) for x in nature)}</section>
+<section class="building-section"><h2>2 articles de Building and Environment</h2>{''.join(item_html(x) for x in building)}</section></div>
 </main>{nba_scores_html(nba_games)}</div>
 <section class="positive-article-section"><p class="positive-article-kicker">POUR FINIR SUR UNE BONNE NOTE</p><h2>Une bonne nouvelle pour terminer le briefing</h2>{item_html(positive_article) if positive_article else '<p>La sélection d’articles positifs est temporairement indisponible. Réessaie au prochain briefing.</p>'}</section>
 <footer><p>Prototype personnel. Les images restent hébergées par leurs éditeurs et peuvent ne pas être disponibles si l’accès automatisé est bloqué. Certains éditeurs ne rendent pas l’abstract complet accessible.</p></footer></body></html>"""
