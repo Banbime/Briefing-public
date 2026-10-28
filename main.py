@@ -314,14 +314,17 @@ def fetch_openalex_journal_works(group):
             print(f"OpenAlex journal source not found: {journal}")
             return []
         cursor = "*"
-        for page_number in range(3):
+        page_number = 0
+        while cursor:
+            page_number += 1
             response = requests.get("https://api.openalex.org/works", params={
                 "filter": f"primary_location.source.id:{source['id']},from_publication_date:{cutoff},to_publication_date:{NOW.date().isoformat()},is_oa:true,type:article|review",
                 "per-page": 100, "sort": "publication_date:desc", "cursor": cursor
             }, timeout=25, headers=HEADERS)
             response.raise_for_status()
             payload = response.json()
-            for work in payload.get("results", []):
+            page_works = payload.get("results", [])
+            for work in page_works:
                 if (work.get("type") or "").lower() not in ("article", "review"):
                     continue
                 location = work.get("primary_location") or {}
@@ -339,10 +342,12 @@ def fetch_openalex_journal_works(group):
                     "_openalex_oa": True,
                 })
 
-            cursor = (payload.get("meta") or {}).get("next_cursor")
-            if not cursor:
+            next_cursor = (payload.get("meta") or {}).get("next_cursor")
+            print(f"OpenAlex [{journal}] page {page_number}: {len(page_works)} records")
+            if not next_cursor or not page_works:
                 break
-        print(f"OpenAlex five-year OA pool [{journal}]: {len(works)} records")
+            cursor = next_cursor
+        print(f"OpenAlex five-year OA pool [{journal}]: {len(works)} unique records")
     except Exception as ex:
         print(f"OpenAlex journal lookup failed [{journal}]: {type(ex).__name__}")
     return unique(works)
