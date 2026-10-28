@@ -313,28 +313,35 @@ def fetch_openalex_journal_works(group):
         if not source:
             print(f"OpenAlex journal source not found: {journal}")
             return []
-        response = requests.get("https://api.openalex.org/works", params={
-            "filter": f"primary_location.source.id:{source['id']},from_publication_date:{cutoff},to_publication_date:{NOW.date().isoformat()},is_oa:true,type:article|review",
-            "per-page": 100, "sort": "publication_date:desc"
-        }, timeout=25, headers=HEADERS)
-        response.raise_for_status()
-        for work in response.json().get("results", []):
-            if (work.get("type") or "").lower() not in ("article", "review"):
-                continue
-            location = work.get("primary_location") or {}
-            landing = location.get("landing_page_url") or work.get("doi") or ""
-            title = clean(work.get("title", ""))
-            if not title or not landing:
-                continue
-            oa = work.get("open_access") or {}
-            works.append({
-                "source": journal, "title": title, "link": landing, "summary": "",
-                "abstract": "", "abstract_status": "not_checked",
-                "doi": (work.get("doi") or "").replace("https://doi.org/", ""),
-                "date": work.get("publication_date", ""), "category": group,
-                "image_url": "", "open_access_url": oa.get("oa_url") or "",
-                "_openalex_oa": True,
-            })
+        cursor = "*"
+        for page_number in range(3):
+            response = requests.get("https://api.openalex.org/works", params={
+                "filter": f"primary_location.source.id:{source['id']},from_publication_date:{cutoff},to_publication_date:{NOW.date().isoformat()},is_oa:true,type:article|review",
+                "per-page": 100, "sort": "publication_date:desc", "cursor": cursor
+            }, timeout=25, headers=HEADERS)
+            response.raise_for_status()
+            payload = response.json()
+            for work in payload.get("results", []):
+                if (work.get("type") or "").lower() not in ("article", "review"):
+                    continue
+                location = work.get("primary_location") or {}
+                landing = location.get("landing_page_url") or work.get("doi") or ""
+                title = clean(work.get("title", ""))
+                if not title or not landing:
+                    continue
+                oa = work.get("open_access") or {}
+                works.append({
+                    "source": journal, "title": title, "link": landing, "summary": "",
+                    "abstract": "", "abstract_status": "not_checked",
+                    "doi": (work.get("doi") or "").replace("https://doi.org/", ""),
+                    "date": work.get("publication_date", ""), "category": group,
+                    "image_url": "", "open_access_url": oa.get("oa_url") or "",
+                    "_openalex_oa": True,
+                })
+
+            cursor = (payload.get("meta") or {}).get("next_cursor")
+            if not cursor:
+                break
         print(f"OpenAlex five-year OA pool [{journal}]: {len(works)} records")
     except Exception as ex:
         print(f"OpenAlex journal lookup failed [{journal}]: {type(ex).__name__}")
@@ -971,50 +978,38 @@ def select_items():
     for x in world_all:
         if len(world) >= 3: break
         if x not in world: world.append(x)
-    # Scientific papers may be up to one year old; prefer a rotating selection over newest-only.
+    # One scientific reading per day, rotated across all three journals.
     nature = scientific_papers_from_last_year([x for x in exclude_monthly_duplicates(collect("nature")) if is_open_access(x)])
     chemistry = scientific_papers_from_last_year([x for x in exclude_monthly_duplicates(collect("chemistry")) if is_open_access(x)])
     building_all = exclude_monthly_duplicates(collect("building"))
-    building_recent = scientific_papers_from_last_year(building_all)
-    building_oa = [x for x in building_recent if is_open_access(x)]
-    # Keep the scientific section strictly open access; do not silently fall back
-    # to subscription-only records if OpenAlex or publisher metadata is incomplete.
-    building = building_oa
-    print(f"Building and Environment five-year OA pool: {len(building_oa)} papers")
-    selected_chemistry = rotating_selection(chemistry, 1, seed_offset=3)
-    selected_nature = list(selected_chemistry)
-    remaining_nature = [x for x in nature + chemistry if x["title"].lower() not in {y["title"].lower() for y in selected_nature}]
-    selected_nature.extend(rotating_selection(remaining_nature, 3 - len(selected_nature), seed_offset=11))
-    ranked = []
-    for x in building:
-        score = sum(term in (x["title"] + " " + x["summary"]).lower() for term in THERMAL_TERMS)
-        ranked.append((score, x))
-    relevant = [x for score, x in sorted(ranked, key=lambda z: z[0], reverse=True) if score > 0]
-    pool = relevant if len(relevant) >= 3 else [x for _, x in sorted(ranked, key=lambda z: z[0], reverse=True)]
-    selected_building = rotating_selection(pool, 3, seed_offset=23)
-    print(f"Open-access papers published in last five years: Nature/Chemistry={len(selected_nature)}, Building and Environment={len(selected_building)}")
-    # If an article has no full abstract, skip it and try the next eligible paper.
-    def with_abstracts(candidates, count, label):
-        selected = []
-        seen = set()
-        for candidate in candidates:
-            key = article_history_keys(candidate)
-            if key in seen:
-                continue
-            seen.add(key)
-            enrich_abstracts([candidate])
-            if candidate.get("abstract_status") not in ("unavailable", "rss_fallback", "not_checked") and candidate.get("abstract"):
-                selected.append(candidate)
-            else:
-                print(f"Skipping {label} article without a full abstract: {candidate.get('title','')[:90]}")
-            if len(selected) >= count:
-                break
-        return selected
+    building = [x for x in scientific_papers_from_last_year(building_all) if is_open_access(x)]
+    print(f"Building and Environment five-year OA pool: {len(building)} papers")
+    ranked_building = []
+    for item in building:
+        score = sum(term in (item["title"] + " " + item["summary"]).lower() for term in THERMAL_TERMS)
+        ranked_building.append((score, item))
+    relevant_building = [item for score, item in sorted(ranked_building, key=lambda pair: pair[0], reverse=True) if score > 0]
+    # Prioritize relevant Building and Environment papers, while keeping other OA papers as a reserve.
+    building_pool = relevant_building + [item for _, item in sorted(ranked_building, key=lambda pair: pair[0], reverse=True) if item not in relevant_building]
+    science_pool = unique(nature + chemistry + building_pool)
+    print(f"Open-access five-year pool: Nature/Chemistry={len(nature + chemistry)}, Building and Environment={len(building)}; total unique={len(science_pool)}")
 
-    nature_candidates = selected_nature + remaining_nature
-    building_candidates = selected_building + [x for x in pool if x not in selected_building]
-    selected_nature = with_abstracts(nature_candidates, 3, "Nature")
-    selected_building = with_abstracts(building_candidates, 3, "Building and Environment")
+    # Prefer a daily rotation across the full pool; try alternatives if an abstract is unavailable.
+    start = (NOW.timetuple().tm_yday - 1) % max(1, len(science_pool))
+    candidates = science_pool[start:] + science_pool[:start]
+    chosen = None
+    for candidate in candidates:
+        enrich_abstracts([candidate])
+        if candidate.get("abstract_status") not in ("unavailable", "rss_fallback", "not_checked") and candidate.get("abstract"):
+            chosen = candidate
+            break
+        print(f"Skipping scientific article without a full abstract: {candidate.get('title','')[:90]}")
+    selected_nature = [chosen] if chosen and chosen.get("category") in ("nature", "chemistry") else []
+    selected_building = [chosen] if chosen and chosen.get("category") == "building" else []
+    if chosen:
+        print(f"Today's scientific reading: [{chosen.get('source', '')}] {chosen.get('title', '')}")
+    else:
+        print("No unused open-access scientific article with an available abstract was found.")
     return world[:3], selected_nature, selected_building
 
 def gemini_rewrite(sections, weather_text):
@@ -1045,7 +1040,7 @@ Données :
 def fallback_script(weather_text, world, nature, building):
     lines = [f"Bonjour. Voici votre briefing du {NOW:%d/%m/%Y}.", weather_text]
     for label, entries in [("Actualités mondiales", world),
-                           ("Articles de Nature, dont Nature Chemistry", nature),
+                           ("Lecture scientifique du jour", nature),
                            ("Building and Environment : qualité de l'air et confort thermique", building)]:
         lines.append(label + ".")
         for i, x in enumerate(entries, 1):
@@ -1162,7 +1157,7 @@ def build_audio_script(weather_text, world, nature, building, positive_article=N
     lines = [f"Bonjour. Voici votre briefing du {NOW:%d/%m/%Y}.", weather_text]
     sections = [
         ("Les actualités mondiales", world, "en"),
-        ("Les publications scientifiques de Nature, dont Nature Chemistry", nature, "en"),
+        ("La lecture scientifique du jour", nature, "en"),
         ("Les publications de Building and Environment sur la qualité de l'air et le confort thermique", building, "en"),
     ]
     for label, entries, default_language in sections:
@@ -1677,14 +1672,14 @@ article.article-card{{display:grid;grid-template-columns:minmax(180px,30%) 1fr;g
 .article-image-link{{display:block;min-height:210px;background:#e8efed}}.article-image{{display:block;width:100%;height:100%;min-height:210px;max-height:300px;object-fit:cover}}
 .article-image-placeholder{{min-height:210px;display:grid;place-items:center;background:linear-gradient(135deg,#d8e9e3,#e8e8dd 55%,#cbdedc);color:#42635d;font-weight:800;letter-spacing:.2em;font-size:.75rem}}
 .article-content{{padding:1rem 1.25rem 1.1rem 0}}.eyebrow{{font-size:.68rem}}.abstract-status{{display:inline-block;background:#e8f4ef;color:#236457;border-radius:99px;padding:.15rem .6rem;font-size:.74rem;font-weight:700;margin:.2rem 0 .4rem}}.abstract-text{{color:#3b4a53;margin:.4rem 0 .7rem}}.source-link{{font-size:.88rem}}
-.weather{{padding:1.25rem 1.4rem;background:linear-gradient(135deg,#e7f1f0,#f3f8f6);border:1px solid #d3e5e1;border-radius:18px}}.weather h2{{margin:.1rem 0 1rem;border:0}}.weather h2:before{{display:none}}.weather-grid{{display:grid;grid-template-columns:1fr 1fr;gap:1rem}}.weather-card{{padding:1.1rem 1.2rem;background:#fff;border:1px solid #dce9e6;border-radius:14px;min-width:0}}.weather-label{{margin:0 0 .55rem;color:#53756d;font-size:.7rem;font-weight:800;letter-spacing:.1em}}.weather-main{{display:flex;align-items:center;gap:1rem;min-height:105px}}.weather-icon{{font-size:4rem;line-height:1;filter:drop-shadow(0 5px 5px #173b3015)}}.weather-condition{{margin:0;color:#47625d;font-size:.9rem;font-weight:700}}.weather-temperature{{margin:.1rem 0;font-size:2rem;line-height:1.2;font-weight:800;letter-spacing:-.04em;color:#183e3a}}.weather-subtitle{{margin:0;color:var(--muted);font-size:.75rem}}.weather-details{{margin:.8rem 0 0;padding-top:.65rem;border-top:1px solid #edf1ef;color:#52655f;font-size:.84rem}}.weather-source{{margin:.9rem 0 0;color:var(--muted);font-size:.78rem}}.hourly-heading{{margin:1.2rem 0 .6rem;font-size:1rem}}.hourly-scroll{{display:flex;gap:.65rem;overflow-x:auto;padding:.2rem .1rem .7rem}}.hourly-card{{flex:0 0 112px;padding:.75rem;background:#fff;border:1px solid var(--line);border-radius:12px;text-align:center}}.hourly-time{{margin:0;font-weight:800}}.hourly-icon{{display:block;font-size:1.7rem;margin:.3rem 0}}.hourly-temp{{margin:0;font-size:1.2rem;font-weight:800}}.hourly-condition{{margin:.2rem 0;min-height:2.5em;font-size:.75rem;color:var(--muted)}}.hourly-detail{{margin:0;font-size:.7rem;color:var(--muted)}}.content-layout{{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:1.5rem;align-items:start}}.briefing-main{{min-width:0}}.science-columns{{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:1.1rem;align-items:start}}.science-columns>section{{min-width:0}}.science-columns article.article-card{{grid-template-columns:1fr;gap:0}}.science-columns .article-image-link,.science-columns .article-image,.science-columns .article-image-placeholder{{height:170px;min-height:170px;max-height:210px}}.science-columns .article-content{{padding:1rem}}.nba-sidebar{{min-width:0;position:sticky;top:1rem}}.nba-panel{{background:#fff;border:1px solid var(--line);border-radius:16px;padding:1rem}}.nba-panel h2{{margin:.15rem 0 .9rem;border:0;font-size:1.25rem}}.nba-panel h2:before{{display:none}}.nba-eyebrow{{margin:0;color:#146b65;font-size:.7rem;font-weight:850;letter-spacing:.1em;text-transform:uppercase}}.nba-game{{padding:.7rem 0;border-top:1px solid var(--line)}}.nba-team+.nba-team{{margin-top:.55rem}}.nba-team-line{{display:flex;align-items:center;gap:.5rem;min-width:0}}.nba-logo{{width:30px;height:30px;object-fit:contain;flex:0 0 30px}}.nba-team-name{{font-size:.86rem;font-weight:750;flex:1}}.nba-score{{font-size:1.05rem;font-variant-numeric:tabular-nums}}.nba-winner .nba-score{{color:#146b65}}.nba-leader{{margin:.15rem 0 0 38px;font-size:.72rem;line-height:1.4;color:#53636d}}.nba-leader strong{{color:var(--ink)}}.nba-muted,.nba-empty{{color:var(--muted);font-size:.82rem}}.nba-source{{margin:.75rem 0 0;padding-top:.6rem;border-top:1px solid var(--line);font-size:.68rem;color:var(--muted)}}.player{{padding:1.1rem 1.3rem;background:#fff;border:1px solid var(--line);border-radius:16px}}.positive-article-section{{margin-top:2.5rem;padding:1.4rem;background:linear-gradient(135deg,#e7f5ec,#f7faf3);border:1px solid #cfe7d7;border-radius:18px}}
+.weather{{padding:1.25rem 1.4rem;background:linear-gradient(135deg,#e7f1f0,#f3f8f6);border:1px solid #d3e5e1;border-radius:18px}}.weather h2{{margin:.1rem 0 1rem;border:0}}.weather h2:before{{display:none}}.weather-grid{{display:grid;grid-template-columns:1fr 1fr;gap:1rem}}.weather-card{{padding:1.1rem 1.2rem;background:#fff;border:1px solid #dce9e6;border-radius:14px;min-width:0}}.weather-label{{margin:0 0 .55rem;color:#53756d;font-size:.7rem;font-weight:800;letter-spacing:.1em}}.weather-main{{display:flex;align-items:center;gap:1rem;min-height:105px}}.weather-icon{{font-size:4rem;line-height:1;filter:drop-shadow(0 5px 5px #173b3015)}}.weather-condition{{margin:0;color:#47625d;font-size:.9rem;font-weight:700}}.weather-temperature{{margin:.1rem 0;font-size:2rem;line-height:1.2;font-weight:800;letter-spacing:-.04em;color:#183e3a}}.weather-subtitle{{margin:0;color:var(--muted);font-size:.75rem}}.weather-details{{margin:.8rem 0 0;padding-top:.65rem;border-top:1px solid #edf1ef;color:#52655f;font-size:.84rem}}.weather-source{{margin:.9rem 0 0;color:var(--muted);font-size:.78rem}}.hourly-heading{{margin:1.2rem 0 .6rem;font-size:1rem}}.hourly-scroll{{display:flex;gap:.65rem;overflow-x:auto;padding:.2rem .1rem .7rem}}.hourly-card{{flex:0 0 112px;padding:.75rem;background:#fff;border:1px solid var(--line);border-radius:12px;text-align:center}}.hourly-time{{margin:0;font-weight:800}}.hourly-icon{{display:block;font-size:1.7rem;margin:.3rem 0}}.hourly-temp{{margin:0;font-size:1.2rem;font-weight:800}}.hourly-condition{{margin:.2rem 0;min-height:2.5em;font-size:.75rem;color:var(--muted)}}.hourly-detail{{margin:0;font-size:.7rem;color:var(--muted)}}.content-layout{{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:1.5rem;align-items:start}}.briefing-main{{min-width:0}}.science-columns{{display:block}}.science-columns>section{{min-width:0}}.nba-sidebar{{min-width:0;position:sticky;top:1rem}}.nba-panel{{background:#fff;border:1px solid var(--line);border-radius:16px;padding:1rem}}.nba-panel h2{{margin:.15rem 0 .9rem;border:0;font-size:1.25rem}}.nba-panel h2:before{{display:none}}.nba-eyebrow{{margin:0;color:#146b65;font-size:.7rem;font-weight:850;letter-spacing:.1em;text-transform:uppercase}}.nba-game{{padding:.7rem 0;border-top:1px solid var(--line)}}.nba-team+.nba-team{{margin-top:.55rem}}.nba-team-line{{display:flex;align-items:center;gap:.5rem;min-width:0}}.nba-logo{{width:30px;height:30px;object-fit:contain;flex:0 0 30px}}.nba-team-name{{font-size:.86rem;font-weight:750;flex:1}}.nba-score{{font-size:1.05rem;font-variant-numeric:tabular-nums}}.nba-winner .nba-score{{color:#146b65}}.nba-leader{{margin:.15rem 0 0 38px;font-size:.72rem;line-height:1.4;color:#53636d}}.nba-leader strong{{color:var(--ink)}}.nba-muted,.nba-empty{{color:var(--muted);font-size:.82rem}}.nba-source{{margin:.75rem 0 0;padding-top:.6rem;border-top:1px solid var(--line);font-size:.68rem;color:var(--muted)}}.player{{padding:1.1rem 1.3rem;background:#fff;border:1px solid var(--line);border-radius:16px}}.positive-article-section{{margin-top:2.5rem;padding:1.4rem;background:linear-gradient(135deg,#e7f5ec,#f7faf3);border:1px solid #cfe7d7;border-radius:18px}}
 .positive-article-kicker{{margin:0;color:#23744c;font-size:.7rem;font-weight:850;letter-spacing:.1em}}
 .positive-article-section>h2{{margin:.2rem 0 1rem;color:#174b35;border:0}}
 .positive-article-section>h2:before{{display:none}}
 .positive-article-section .article-card{{background:#fff;border-color:#d6e8dc}}
 .positive-article-section .abstract-status{{background:#e7f5ec;color:#23744c}}
 audio{{width:100%;margin:.4rem 0}}.intro{{color:var(--muted);max-width:800px}}footer{{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.85rem}}
-@media(max-width:1100px){{.science-columns{{grid-template-columns:1fr}}.science-columns article.article-card{{grid-template-columns:minmax(180px,30%) 1fr}}.science-columns .article-image-link,.science-columns .article-image,.science-columns .article-image-placeholder{{height:100%;min-height:180px;max-height:260px}}.science-columns .article-content{{padding:1rem 1.1rem 1.2rem 0}}}}@media(max-width:860px){{.content-layout{{grid-template-columns:1fr}}.nba-sidebar{{position:static;grid-row:1}}}}@media(max-width:640px){{body{{padding:0 .85rem 2rem}}.hero{{margin-left:-.85rem!important;margin-right:-.85rem!important;padding:2rem .85rem!important}}.weather-grid{{grid-template-columns:1fr}}.weather-card{{padding:1rem}}.weather-icon{{font-size:3.4rem}}article.article-card{{grid-template-columns:1fr;gap:0}}.article-image-link,.article-image,.article-image-placeholder{{height:190px;min-height:190px;max-height:230px}}.article-content{{padding:1rem 1.1rem 1.2rem}}h2{{font-size:1.35rem}}}}
+@media(max-width:1100px){{}}@media(max-width:860px){{.content-layout{{grid-template-columns:1fr}}.nba-sidebar{{position:static;grid-row:1}}}}@media(max-width:640px){{body{{padding:0 .85rem 2rem}}.hero{{margin-left:-.85rem!important;margin-right:-.85rem!important;padding:2rem .85rem!important}}.weather-grid{{grid-template-columns:1fr}}.weather-card{{padding:1rem}}.weather-icon{{font-size:3.4rem}}article.article-card{{grid-template-columns:1fr;gap:0}}.article-image-link,.article-image,.article-image-placeholder{{height:190px;min-height:190px;max-height:230px}}.article-content{{padding:1rem 1.1rem 1.2rem}}h2{{font-size:1.35rem}}}}
 </style></head><body>
 <header class="hero"><p class="kicker">Briefing quotidien · {NOW:%A %d %B %Y}</p><h1>L’essentiel du monde et de la recherche.</h1><p>Un regard sur l’actualité, les découvertes scientifiques et le confort des bâtiments, en quelques minutes.</p><blockquote class="daily-quote">« {html.escape(daily_quote)} »<span class="daily-quote-author"> — {html.escape(daily_quote_author)}</span></blockquote>{fun_fact_html}{music_suggestion_html}{relaxation_html}</header>
 <p class="intro">Les visuels proviennent des flux RSS ou des métadonnées des éditeurs lorsqu’ils sont disponibles. Ils servent d’aperçus et renvoient vers les publications originales.</p>
@@ -1692,8 +1687,8 @@ audio{{width:100%;margin:.4rem 0}}.intro{{color:var(--muted);max-width:800px}}fo
 {weather_html(weather_text)}
 <div class="content-layout"><main class="briefing-main">
 <section class="world-section"><h2>3 actualités mondiales</h2>{''.join(item_html(x) for x in world)}</section>
-<div class="science-columns"><section class="nature-section"><h2>3 articles de Nature (dont Nature Chemistry)</h2>{''.join(item_html(x) for x in nature)}</section>
-<section class="building-section"><h2>3 articles de Building and Environment</h2>{''.join(item_html(x) for x in building)}</section></div>
+<div class="science-columns"><section class="nature-section"><h2>Lecture scientifique du jour — Nature / Nature Chemistry</h2>{''.join(item_html(x) for x in nature)}</section>
+<section class="building-section"><h2>Lecture scientifique du jour — Building and Environment</h2>{''.join(item_html(x) for x in building)}</section></div>
 </main>{nba_scores_html(nba_games)}</div>
 <section class="positive-article-section"><p class="positive-article-kicker">POUR FINIR SUR UNE BONNE NOTE</p><h2>Une bonne nouvelle pour terminer le briefing</h2>{item_html(positive_article) if positive_article else '<p>La sélection d’articles positifs est temporairement indisponible. Réessaie au prochain briefing.</p>'}</section>
 <footer><p>Prototype personnel. Les images restent hébergées par leurs éditeurs et peuvent ne pas être disponibles si l’accès automatisé est bloqué. Certains éditeurs ne rendent pas l’abstract complet accessible.</p></footer></body></html>"""
