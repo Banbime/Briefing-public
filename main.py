@@ -56,8 +56,8 @@ def _history_records_in_window():
             continue
         # New entries use YYYY-MM-DD. Legacy entries use YYYY-MM and are treated
         # as one known appearance in the first day of that month.
-        record_date = key if re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", key) else (
-            key + "-01" if re.fullmatch(r"\\d{4}-\\d{2}", key) else ""
+        record_date = key if re.fullmatch(r"\d{4}-\d{2}-\d{2}", key) else (
+            key + "-01" if re.fullmatch(r"\d{4}-\d{2}", key) else ""
         )
         if record_date and cutoff <= record_date <= NOW.date().isoformat():
             records.append(record)
@@ -105,8 +105,8 @@ def save_monthly_history(items):
             titles.add(title)
     cutoff = (NOW.date() - datetime.timedelta(days=ARTICLE_HISTORY_DAYS)).isoformat()
     for key in list(ARTICLE_HISTORY):
-        record_date = key if re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", key) else (
-            key + "-01" if re.fullmatch(r"\\d{4}-\\d{2}", key) else ""
+        record_date = key if re.fullmatch(r"\d{4}-\d{2}-\d{2}", key) else (
+            key + "-01" if re.fullmatch(r"\d{4}-\d{2}", key) else ""
         )
         if record_date and record_date < cutoff:
             ARTICLE_HISTORY.pop(key, None)
