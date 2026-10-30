@@ -78,10 +78,21 @@ def exclude_monthly_duplicates(items, used=None):
             if key:
                 title_counts[key] = title_counts.get(key, 0) + 1
 
+    # Stronger short-term rule: never repeat an article seen in the last 7 days.
+    weekly_urls, weekly_titles = set(), set()
+    week_cutoff = (NOW.date() - datetime.timedelta(days=6)).isoformat()
+    for key, record in ARTICLE_HISTORY.items():
+        if not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", key) or not (week_cutoff <= key <= NOW.date().isoformat()):
+            continue
+        weekly_urls.update(str(v).strip().rstrip("/").lower() for v in record.get("urls", []))
+        weekly_titles.update(re.sub(r"[^a-z0-9]+", " ", clean(v).lower()).strip()
+                             for v in record.get("titles", []))
+
     filtered = []
     for item in items:
         url, title = article_history_keys(item)
         if (url in used or title in used
+                or url in weekly_urls or title in weekly_titles
                 or url_counts.get(url, 0) >= MAX_ARTICLE_APPEARANCES
                 or title_counts.get(title, 0) >= MAX_ARTICLE_APPEARANCES):
             continue
@@ -1227,8 +1238,6 @@ def build_audio_script(weather_text, world, nature, building, positive_article=N
     lines = [f"Bonjour. Voici votre briefing du {NOW:%d/%m/%Y}.", weather_text]
     sections = [
         ("Les actualités mondiales", world, "en"),
-        ("La lecture scientifique du jour", nature, "en"),
-        ("Les publications de Building and Environment sur la qualité de l'air et le confort thermique", building, "en"),
     ]
     for label, entries, default_language in sections:
         lines.append(label + ".")
@@ -1261,6 +1270,22 @@ def build_audio_script(weather_text, world, nature, building, positive_article=N
                 )
             else:
                 lines.append("Les statistiques individuelles de Victor Wembanyama ne sont pas disponibles.")
+    sections = [
+        ("La lecture scientifique du jour", nature, "en"),
+        ("Les publications de Building and Environment sur la qualité de l'air et le confort thermique", building, "en"),
+    ]
+    for label, entries, default_language in sections:
+        lines.append(label + ".")
+        for index, item in enumerate(entries, 1):
+            source_default = "fr" if item.get("source", "").startswith("Le Monde") else default_language
+            title = translate_for_audio(item.get("title", ""), translator, source_default == "en")
+            lines.append(f"Article {index} : {title}.")
+            summary = item.get("abstract") or item.get("summary") or ""
+            if summary:
+                translated = translate_for_audio(summary, translator, source_default == "en")
+                lines.append(translated)
+            else:
+                lines.append("Le résumé détaillé n'est pas disponible.")
     if positive_article:
         lines.append("Pour terminer, une bonne nouvelle.")
         positive_title = translate_for_audio(positive_article.get("title", ""), translator, True)
