@@ -476,6 +476,42 @@ def extract_abstract(page, fallback=""):
         except Exception:
             pass
 
+    # Nature News (DOI d41586...) is editorial journalism, not a research paper:
+    # it often has a short standfirst/teaser rather than a formal abstract.
+    # Keep this fallback scoped to those URLs so research-paper abstracts remain strict.
+    page_url = ""
+    for node in soup.find_all("meta"):
+        key = (node.get("name") or node.get("property") or "").strip().lower()
+        if key in {"citation_public_url", "og:url"}:
+            page_url = node.get("content", "")
+            break
+    is_nature_news = "d41586-" in page_url.lower()
+    if not is_nature_news:
+        is_nature_news = any("d41586-" in str(value).lower()
+                             for value in soup.find_all("link", href=True)
+                             for value in [value.get("href", "")])
+    if is_nature_news:
+        teaser_selectors = [
+            ".c-article-header__teaser", ".c-article__teaser",
+            ".c-article-summary", ".c-article__standfirst",
+            ".article__teaser", ".article-header__teaser",
+            "[data-test='article-teaser']"
+        ]
+        for selector in teaser_selectors:
+            try:
+                node = soup.select_one(selector)
+                if node:
+                    text = clean(node.get_text(" ", strip=True))
+                    if 45 <= len(text) <= 2000:
+                        return text, "page_metadata"
+            except Exception:
+                continue
+        for meta in soup.find_all("meta"):
+            key = (meta.get("name") or meta.get("property") or "").strip().lower()
+            value = clean(meta.get("content", ""))
+            if key in {"description", "og:description", "twitter:description"} and 45 <= len(value) <= 2000:
+                return value, "page_metadata"
+
     return clean(fallback)[:4000], ("rss_fallback" if fallback else "unavailable")
 
 
