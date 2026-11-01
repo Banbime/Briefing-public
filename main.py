@@ -82,7 +82,7 @@ def exclude_monthly_duplicates(items, used=None):
     weekly_urls, weekly_titles = set(), set()
     week_cutoff = (NOW.date() - datetime.timedelta(days=6)).isoformat()
     for key, record in ARTICLE_HISTORY.items():
-        if not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", key) or not (week_cutoff <= key <= NOW.date().isoformat()):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", key) or not (week_cutoff <= key <= NOW.date().isoformat()):
             continue
         weekly_urls.update(str(v).strip().rstrip("/").lower() for v in record.get("urls", []))
         weekly_titles.update(re.sub(r"[^a-z0-9]+", " ", clean(v).lower()).strip()
@@ -573,6 +573,28 @@ def openalex_abstract(item, page=""):
         return ""
 
 
+def semantic_scholar_abstract(item, page=""):
+    """Try Semantic Scholar's public API for an abstract when Crossref/OpenAlex have none."""
+    doi = extract_doi(item, page)
+    if not doi:
+        return ""
+    try:
+        url = "https://api.semanticscholar.org/graph/v1/paper/DOI:" + requests.utils.quote(doi, safe="/")
+        response = requests.get(url, params={"fields": "title,abstract"}, timeout=12, headers=HEADERS)
+        if response.status_code != 200:
+            return ""
+        work = response.json()
+        expected = re.sub(r"[^a-z0-9]+", " ", clean(item.get("title", "")).lower()).strip()
+        actual = re.sub(r"[^a-z0-9]+", " ", clean(work.get("title", "")).lower()).strip()
+        abstract = clean(work.get("abstract", ""))
+        if actual and (actual == expected or actual in expected or expected in actual) and len(abstract) >= 120:
+            return abstract[:9000]
+        return ""
+    except Exception as ex:
+        print("Semantic Scholar abstract lookup failed:", type(ex).__name__)
+        return ""
+
+
 def ssrn_abstract(item):
     """Find an SSRN abstract by known record, DOI, or exact title match."""
     title = clean(item.get("title", ""))
@@ -692,9 +714,13 @@ def enrich_abstracts(items):
                     if openalex:
                         abstract, status = openalex, "openalex"
                     else:
-                        ssrn = ssrn_abstract(item)
-                        if ssrn:
-                            abstract, status = ssrn, "ssrn"
+                        semantic = semantic_scholar_abstract(item, page)
+                        if semantic:
+                            abstract, status = semantic, "semantic_scholar"
+                        else:
+                            ssrn = ssrn_abstract(item)
+                            if ssrn:
+                                abstract, status = ssrn, "ssrn"
             item["abstract"] = abstract
             item["abstract_status"] = status
             print(f"Abstract [{status}]: {item['title'][:100]}")
@@ -704,7 +730,7 @@ def enrich_abstracts(items):
             item["abstract_status"] = "rss_fallback" if item["summary"] else "unavailable"
             print(f"Abstract fetch failed [{item['title'][:80]}]: {type(ex).__name__}")
             if item["abstract_status"] == "rss_fallback":
-                for getter, status in ((crossref_abstract, "crossref"), (openalex_abstract, "openalex"), (lambda it, pg: ssrn_abstract(it), "ssrn")):
+                for getter, status in ((crossref_abstract, "crossref"), (openalex_abstract, "openalex"), (semantic_scholar_abstract, "semantic_scholar"), (lambda it, pg: ssrn_abstract(it), "ssrn")):
                     value = getter(item, page)
                     if value:
                         item["abstract"], item["abstract_status"] = value, status
