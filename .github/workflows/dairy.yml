@@ -3,7 +3,7 @@ name: Build daily briefing
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 6 * * *"
+    - cron: "00 6 * * *"
       timezone: "Europe/Paris"
 
 permissions:
