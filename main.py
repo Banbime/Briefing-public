@@ -331,7 +331,7 @@ def _building_and_environment_image(soup, page_url):
     # Some ScienceDirect versions serialize image URLs in page scripts rather
     # than exposing them in the initial DOM.
     script_urls = re.findall(
-        r"""https?://[^\\"'\\s<>]+(?:ars\\.els-cdn\\.com|sciencedirect)[^\\"'\\s<>]+?\\.(?:jpg|jpeg|png|webp)(?:\\?[^\\"'\\s<>]*)?""",
+        r"""https?://[^\\"'\s<>]+(?:ars\.els-cdn\.com|sciencedirect)[^\\"'\s<>]+?\.(?:jpg|jpeg|png|webp)(?:\?[^\\"'\s<>]*)?""",
         str(soup), flags=re.I
     )
     for url in script_urls:
