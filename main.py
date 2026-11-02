@@ -192,11 +192,13 @@ def _article_image_url(node, page_url):
         return ""
     candidates = []
     for attr in ("data-zoom-src", "data-src", "data-original", "data-original-src",
-                 "data-lazy-src", "data-image", "data-full-src", "src"):
+                 "data-lazy-src", "data-image", "data-image-src", "data-full-src",
+                 "data-hi-res-src", "data-fig-src", "data-lazy", "src"):
         value = node.get(attr, "")
         if value:
             candidates.append(value.strip())
-    srcset = node.get("srcset", "") or node.get("data-srcset", "")
+    srcset = (node.get("srcset", "") or node.get("data-srcset", "")
+              or node.get("data-lazy-srcset", ""))
     if srcset:
         for entry in srcset.split(","):
             value = entry.strip().split(" ")[0]
@@ -286,6 +288,55 @@ def _building_and_environment_image(soup, page_url):
     if figure_candidates:
         figure_candidates.sort(key=lambda candidate: candidate[0], reverse=True)
         return figure_candidates[0][1]
+
+    # ScienceDirect sometimes renders article figures outside semantic <figure>
+    # elements, or stores their URLs in lazy-loaded image attributes.
+    # Scan the remaining image nodes and rank article-specific Elsevier assets.
+    loose_candidates = []
+    for node in soup.select("img, source"):
+        url = _article_image_url(node, page_url)
+        if not url:
+            continue
+        details = " ".join([
+            url, node.get("alt", ""), node.get("title", ""),
+            node.get("class", "") if isinstance(node.get("class", ""), str)
+            else " ".join(node.get("class", [])),
+            node.get("id", "")
+        ]).lower()
+        if any(term in details for term in ("logo", "avatar", "author-photo", "spinner",
+                                             "placeholder", "cookie", "icon")):
+            continue
+        score = 0
+        if "ars.els-cdn.com/content/image/" in url.lower():
+            score += 5
+        if re.search(r"(?:ga|gr)[-_ ]?0*1(?:[._-]|$)", url, re.I):
+            score += 5
+        if any(term in details for term in ("graphical", "visual abstract", "figure 1", "fig. 1")):
+            score += 4
+        if "sciencedirect" in url.lower():
+            score += 2
+        # Ignore tiny tracking pixels and common decorative assets when dimensions exist.
+        try:
+            width = int(node.get("width", 0) or 0)
+            height = int(node.get("height", 0) or 0)
+            if width and height and (width < 100 or height < 70):
+                continue
+        except (TypeError, ValueError):
+            pass
+        loose_candidates.append((score, url))
+    if loose_candidates:
+        loose_candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+        return loose_candidates[0][1]
+
+    # Some ScienceDirect versions serialize image URLs in page scripts rather
+    # than exposing them in the initial DOM.
+    script_urls = re.findall(
+        r"""https?://[^\\"'\\s<>]+(?:ars\\.els-cdn\\.com|sciencedirect)[^\\"'\\s<>]+?\\.(?:jpg|jpeg|png|webp)(?:\\?[^\\"'\\s<>]*)?""",
+        str(soup), flags=re.I
+    )
+    for url in script_urls:
+        if not re.search(r"(logo|icon|avatar|spinner|placeholder)", url, re.I):
+            return html.unescape(url).replace("\\/", "/")
     return ""
 
 def fetch_article_image(item):
